@@ -192,7 +192,7 @@ static void text2x5(int x, int y, const char *s, int scale, uint16_t color)
         unsigned bits = glyph2x5(*s);
         for (int row = 0; row < 5; row++)
             for (int col = 0; col < 2; col++)
-                if (bits & (1u << (8 - row * 2 - col)))
+                if (bits & (1u << (9 - row * 2 - col)))
                     rect(x + col * scale, y + row * scale, scale, scale, color);
     }
 }
