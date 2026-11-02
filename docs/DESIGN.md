@@ -104,6 +104,13 @@ channel to the NRF channel at the same centre frequency, samples RPD eight
 times, and publishes 0–100%.  The NRF runs independently and does not affect
 the Wi-Fi sniffer.  If no module is found, the UI shows `RF --`.
 
+## Service clock
+
+There is no RTC or network time source.  The header shows `UP HH:MM` and the
+INFO page shows `UP HH:MM:SS`, both derived from `esp_timer_get_time()`.  The
+clock uses a dedicated 2x5 numeric font so it fits in the header without
+competing with the RSSI display.  It is uptime, not wall-clock time.
+
 ## Memory
 
 The display uses one 160x128 RGB565 framebuffer (40KB) in internal DMA RAM.  The

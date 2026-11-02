@@ -171,6 +171,44 @@ static void text3x5(int x, int y, const char *s, int scale, uint16_t color)
     }
 }
 
+/* 2x5 numeric font for the service clock and other low-priority counters.
+ * Three pixels per character including the gap, so a HH:MM clock fits in
+ * the header without competing with the main RSSI display. */
+static unsigned glyph2x5(char c)
+{
+    switch (c) {
+    case '0': return 0x3AB; case '1': return 0x155; case '2': return 0x37B;
+    case '3': return 0x377; case '4': return 0x2B5; case '5': return 0x3B7;
+    case '6': return 0x3BF; case '7': return 0x355; case '8': return 0x3BB;
+    case '9': return 0x3F7; case ':': return 0x044; case '-': return 0x030;
+    case '.': return 0x001; case ' ': return 0;
+    default: return 0;
+    }
+}
+
+static void text2x5(int x, int y, const char *s, int scale, uint16_t color)
+{
+    for (; *s; s++, x += 3 * scale) {
+        unsigned bits = glyph2x5(*s);
+        for (int row = 0; row < 5; row++)
+            for (int col = 0; col < 2; col++)
+                if (bits & (1u << (8 - row * 2 - col)))
+                    rect(x + col * scale, y + row * scale, scale, scale, color);
+    }
+}
+
+static void service_clock(char *out, size_t n, bool with_seconds)
+{
+    uint32_t sec = (uint32_t)(esp_timer_get_time() / 1000000);
+    uint32_t h = sec / 3600;
+    uint32_t m = (sec / 60) % 60;
+    uint32_t s = sec % 60;
+    if (h > 99) h = 99;
+    if (with_seconds) snprintf(out, n, "%02lu:%02lu:%02lu",
+                               (unsigned long)h, (unsigned long)m, (unsigned long)s);
+    else snprintf(out, n, "%02lu:%02lu", (unsigned long)h, (unsigned long)m);
+}
+
 static void text8(int x, int y, const char *s, int scale, uint16_t color)
 {
     for (; *s; s++, x += 8 * scale) {
@@ -199,9 +237,15 @@ static void fit_text(char *dst, size_t n, const char *src)
     if (!n) return;
     for (; src && *src && j + 1 < n; src++) {
         unsigned char c = (unsigned char)*src;
-        if (c >= 0x80) continue;
+        if (c >= 0x80) {
+            if ((c & 0xC0) != 0x80) dst[j++] = '?';
+            continue;
+        }
         if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
         if (c == '_') c = '-';
+        if (c == ',') c = '.';
+        if (c == '&') c = '+';
+        if (c == '(' || c == ')' || c == '\'' || c == '"') c = ' ';
         if (c == ' ' || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
             c == '-' || c == '.' || c == ':' || c == '/' || c == '+') {
             dst[j++] = (char)c;
@@ -309,7 +353,11 @@ static void draw_finder_page(const finder_view_t *v)
     clear_panel();
 
     text3x5(2, 2, "IOT FIND", 2, COL_TEXT);
-    text3x5(128, 3, "2.4G", 1, COL_DIM);
+    text3x5(128, 2, "2.4G", 1, COL_DIM);
+    char clk[16];
+    service_clock(clk, sizeof(clk), false);
+    text3x5(114, 7, "UP", 1, COL_DIM);
+    text2x5(124, 7, clk, 1, COL_DIM);
     rect(0, 12, WIDTH, 1, COL_DARK);
 
     draw_mac_line(v);
@@ -417,7 +465,7 @@ static void draw_finder_page(const finder_view_t *v)
 
 static void draw_info_page(const finder_view_t *v)
 {
-    char buf[96], tmp[64], mac[18];
+    char buf[96], tmp[64], mac[18], clk[16];
 
     clear_panel();
 
@@ -482,7 +530,11 @@ static void draw_info_page(const finder_view_t *v)
     text3x5(2, 103, "K3 SHORT = NEXT CANDIDATE", 1, COL_DIM);
     text3x5(2, 110, "K3 HOLD  = CLEAR TARGET", 1, COL_DIM);
 
-    text3x5(2, 119, "K4 BACK   HOLD K4 = RESET", 1, COL_ACCENT);
+    service_clock(clk, sizeof(clk), true);
+    text3x5(2, 119, "UP", 1, COL_DIM);
+    text2x5(14, 119, clk, 1, COL_ACCENT);
+    text3x5(48, 119, "K4 BACK", 1, COL_TEXT);
+    text3x5(88, 119, "HOLD=RST", 1, COL_DIM);
 
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));

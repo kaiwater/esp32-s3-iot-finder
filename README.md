@@ -136,7 +136,8 @@ help                    帮助
 
 ```text
 ┌────────────────────────┐
-│ IOT FIND          2.4G │
+│ IOT FIND      2.4G     │
+│                UP 00:42│
 ├────────────────────────┤
 │ A4:C1:38:xx:xx:xx LOCK │
 │ Espressif        CH 6  │
@@ -155,6 +156,8 @@ help                    帮助
 ```
 
 - 标题和统计用 3x5 小字，RSSI 用 8x8 大字
+- 右上角 `UP HH:MM` 是**本次开机后的服务时钟**（不是网络时间；本机不联网）
+- 另有一套 2x5 数字小字库，只服务时钟和低优先级数字，不挤占主 RSSI 区域
 - 深绿 PHO 主题，暗背景，强信号才提亮
 - 底部 `RF` 是 NRF 在当前 Wi-Fi 频道中心 1MHz 的 RPD 占用，**不是 dBm**
 
@@ -171,6 +174,7 @@ help                    帮助
 - 默认 1–13 跳频，每信道 150ms；听到目标后自动锁定
 - 国家码 `01` + 手动 1–13，避免 12/13 被默认禁用
 - 被动学习 BSSID/SSID，不调用 `esp_wifi_scan`，不发 probe request
+- 服务时钟使用 `esp_timer` 开机时间，Info 页显示 `UP HH:MM:SS`
 - OUI 厂商表由 `tools/gen-oui.py` 从 IEEE 公开 OUI 列表生成
 - NRF 只读 `RPD`，跟随当前 Wi-Fi 频道中心，8 次采样得到 0–100%
 
