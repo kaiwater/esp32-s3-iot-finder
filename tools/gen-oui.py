@@ -98,7 +98,7 @@ def main():
         for i in range(0, len(s), 60):
             chunk = s[i:i + 60]
             esc = (chunk.replace("\\", "\\\\").replace('"', '\\"')
-                        .replace("\n", "").replace("\x00", "\\0"))
+                        .replace("\n", "").replace("\x00", "\\000"))
             f.write('  "%s"\n' % esc)
         f.write(";\n")
 

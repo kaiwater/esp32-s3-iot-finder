@@ -325,7 +325,7 @@ static void draw_finder_page(const finder_view_t *v)
     snprintf(tmp, sizeof(tmp), "CH %u", v->channel);
     text3x5(132, 21, tmp, 1, COL_TEXT);
 
-    text3x5(2, 27, "RSSI", 1, COL_DIM);
+    text3x5(2, 26, "RSSI", 1, COL_DIM);
 
     if (have_rssi) {
         snprintf(buf, sizeof(buf), "%d", v->rssi);
