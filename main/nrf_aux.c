@@ -116,6 +116,11 @@ void nrf_aux_set_channel(uint8_t wifi_channel)
     s_wifi_ch = wifi_channel;
 }
 
+int nrf_aux_csn(void)
+{
+    return s_ok ? s_radio.csn_pin : -1;
+}
+
 bool nrf_aux_ok(void)
 {
     return s_ok;

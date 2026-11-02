@@ -30,6 +30,68 @@ static void button_task(void *arg)
     }
 }
 
+static void ap_refresh(void)
+{
+    s_ui.ap_count = finder_snapshot_aps(s_ui.aps, FINDER_AP_MAX);
+    if (s_ui.ap_count <= 0) {
+        s_ui.ap_sel = 0;
+        s_ui.ap_scroll = 0;
+        return;
+    }
+    if (s_ui.ap_sel >= s_ui.ap_count) s_ui.ap_sel = s_ui.ap_count - 1;
+    if (s_ui.ap_sel < 0) s_ui.ap_sel = 0;
+    if (s_ui.ap_sel < s_ui.ap_scroll) s_ui.ap_scroll = s_ui.ap_sel;
+    if (s_ui.ap_sel >= s_ui.ap_scroll + UI_AP_ROWS)
+        s_ui.ap_scroll = s_ui.ap_sel - UI_AP_ROWS + 1;
+}
+
+static void ap_list_open(void)
+{
+    s_ui.ap_sel = 0;
+    s_ui.ap_scroll = 0;
+    s_ui.sta_sel = 0;
+    s_ui.sta_scroll = 0;
+    s_ui.sta_count = 0;
+    ap_refresh();
+    s_ui.page = UI_PAGE_AP_LIST;
+}
+
+static void ap_move(int dir)
+{
+    if (s_ui.ap_count <= 0) return;
+    s_ui.ap_sel = (s_ui.ap_sel + dir + s_ui.ap_count) % s_ui.ap_count;
+    if (s_ui.ap_sel < s_ui.ap_scroll) s_ui.ap_scroll = s_ui.ap_sel;
+    if (s_ui.ap_sel >= s_ui.ap_scroll + UI_AP_ROWS)
+        s_ui.ap_scroll = s_ui.ap_sel - UI_AP_ROWS + 1;
+}
+
+static void ap_sta_refresh(void)
+{
+    if (s_ui.ap_sel < 0 || s_ui.ap_sel >= s_ui.ap_count) {
+        s_ui.sta_count = 0;
+        s_ui.sta_sel = 0;
+        s_ui.sta_scroll = 0;
+        return;
+    }
+    s_ui.sta_count = finder_snapshot_stas(s_ui.aps[s_ui.ap_sel].bssid,
+                                          s_ui.stas, FINDER_STA_MAX);
+    if (s_ui.sta_sel >= s_ui.sta_count)
+        s_ui.sta_sel = s_ui.sta_count ? s_ui.sta_count - 1 : 0;
+    if (s_ui.sta_sel < 0) s_ui.sta_sel = 0;
+    if (s_ui.sta_sel < s_ui.sta_scroll) s_ui.sta_scroll = s_ui.sta_sel;
+    if (s_ui.sta_sel >= s_ui.sta_scroll + UI_STA_ROWS)
+        s_ui.sta_scroll = s_ui.sta_sel - UI_STA_ROWS + 1;
+}
+
+static void sta_move(int dir)
+{
+    if (s_ui.sta_count <= 0) return;
+    s_ui.sta_sel = (s_ui.sta_sel + dir + s_ui.sta_count) % s_ui.sta_count;
+    if (s_ui.sta_sel < s_ui.sta_scroll) s_ui.sta_scroll = s_ui.sta_sel;
+    if (s_ui.sta_sel >= s_ui.sta_scroll + UI_STA_ROWS)
+        s_ui.sta_scroll = s_ui.sta_sel - UI_STA_ROWS + 1;
+}
+
 static void menu_execute(void)
 {
     switch (s_ui.menu_sel) {
@@ -51,8 +113,7 @@ static void menu_execute(void)
         s_ui.page = UI_PAGE_FIND;
         break;
     case UI_MENU_SSID:
-        s_ui.ssid_enc = SSID_ENC_UNKNOWN;
-        s_ui.page = UI_PAGE_SSID;
+        ap_list_open();
         break;
     case UI_MENU_INFO:
         s_ui.page = UI_PAGE_INFO;
@@ -67,6 +128,46 @@ static void menu_execute(void)
 
 static void handle_event(int b)
 {
+    if (s_ui.page == UI_PAGE_AP_LIST) {
+        if (b == 1) ap_move(1);
+        else if (b == 2) ap_move(-1);
+        else if (b == 3) {
+            if (s_ui.ap_count > 0) s_ui.page = UI_PAGE_AP_DETAIL;
+        } else if (b == 4 || b == 14) {
+            s_ui.page = UI_PAGE_MENU;
+        }
+        return;
+    }
+
+    if (s_ui.page == UI_PAGE_AP_DETAIL) {
+        if (b == 1) ap_move(1);
+        else if (b == 2) ap_move(-1);
+        else if (b == 3) {
+            ap_sta_refresh();
+            s_ui.page = UI_PAGE_AP_STAS;
+        } else if (b == 4 || b == 14) {
+            s_ui.page = UI_PAGE_AP_LIST;
+        }
+        return;
+    }
+
+    if (s_ui.page == UI_PAGE_AP_STAS) {
+        if (b == 1) sta_move(1);
+        else if (b == 2) sta_move(-1);
+        else if (b == 3) {
+            if (s_ui.sta_count > 0 && s_ui.sta_sel >= 0 &&
+                s_ui.sta_sel < s_ui.sta_count) {
+                finder_set_target_temp(s_ui.stas[s_ui.sta_sel].mac,
+                                       "AP list",
+                                       s_ui.stas[s_ui.sta_sel].channel);
+                s_ui.page = UI_PAGE_FIND;
+            }
+        } else if (b == 4 || b == 14) {
+            s_ui.page = UI_PAGE_AP_DETAIL;
+        }
+        return;
+    }
+
     if (s_ui.page == UI_PAGE_MENU) {
         if (b == 1) {
             s_ui.menu_sel = (s_ui.menu_sel + 1) % UI_MENU_COUNT;
@@ -142,6 +243,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  tz CST-8              manual POSIX time zone fallback");
     ESP_LOGI("cli", "  timemode auto|hostapd|standard   Time Value interpretation");
     ESP_LOGI("cli", "  timeclear             erase the persisted UTC/TSF anchor");
+    ESP_LOGI("cli", "  ui ap|detail|stas|find  jump to a UI page (debug)");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
 }
@@ -240,6 +342,19 @@ static void handle_line(char *line)
     } else if (!strncmp(line, "tz ", 3)) {
         const char *arg = line + 3;
         wnm_clock_set_tz((const uint8_t *)arg, (uint8_t)strlen(arg), NULL);
+    } else if (!strncmp(line, "ui ", 3)) {
+        const char *arg = line + 3;
+        if (!strcmp(arg, "ap")) ap_list_open();
+        else if (!strcmp(arg, "detail")) {
+            if (s_ui.ap_count > 0) s_ui.page = UI_PAGE_AP_DETAIL;
+        } else if (!strcmp(arg, "stas")) {
+            ap_sta_refresh();
+            s_ui.page = UI_PAGE_AP_STAS;
+        } else if (!strcmp(arg, "menu")) {
+            s_ui.page = UI_PAGE_MENU;
+        } else if (!strcmp(arg, "find")) {
+            s_ui.page = UI_PAGE_FIND;
+        }
     } else if (!strcmp(line, "timeclear")) {
         wnm_clock_clear_anchor();
     } else if (!strncmp(line, "timemode ", 9)) {
@@ -335,6 +450,7 @@ void app_main(void)
             last_nrf = now;
             nrf_aux_set_channel(s_view.channel);
             s_view.nrf_ok = nrf_aux_ok();
+            s_view.nrf_csn = (int8_t)nrf_aux_csn();
             s_view.nrf_duty = nrf_aux_duty();
         }
         if (now - last_draw >= 100) {

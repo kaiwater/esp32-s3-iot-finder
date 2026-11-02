@@ -23,6 +23,7 @@
 #define EVT_QUEUE_LEN 96
 #define CAND_TABLE_LEN 32
 #define BSS_TABLE_LEN 32
+#define AP_ACTIVE_MS 300000u
 
 #define HOP_MS 150
 #define LEARN_MS 5000
@@ -867,6 +868,12 @@ static void target_note_channel(uint8_t ch)
     xSemaphoreGive(s_api_lock);
 }
 
+void finder_set_target_temp(const uint8_t mac[6], const char *why, uint8_t ch)
+{
+    set_target_internal(mac, why, false);
+    target_note_channel(ch);
+}
+
 static void step_candidate(int dir)
 {
     pick_t list[CAND_TABLE_LEN];
@@ -1025,6 +1032,123 @@ static void dump_candidate(dump_t *d, const cand_rec_t *c, uint32_t now)
         d->probe_ssid_len = c->probe_ssid_len;
     }
     (void)now;
+}
+
+int finder_snapshot_aps(finder_ap_t *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    static finder_ap_t tmp[BSS_TABLE_LEN];
+    int n = 0;
+    uint32_t now = now_ms();
+
+    xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+    for (int i = 0; i < BSS_TABLE_LEN; i++) {
+        bss_rec_t *b = &s_bss[i];
+        if (!b->used) continue;
+        uint8_t seen = 0;
+        for (int j = 0; j < CAND_TABLE_LEN; j++) {
+            cand_rec_t *c = &s_cand[j];
+            if (c->used && now - c->last_ms <= ACTIVE_MS &&
+                mac_eq(c->bssid, b->bssid)) {
+                seen++;
+            }
+        }
+        if (now - b->last_ms > AP_ACTIVE_MS && !seen) continue;
+        finder_ap_t *a = &tmp[n++];
+        memset(a, 0, sizeof(*a));
+        memcpy(a->bssid, b->bssid, 6);
+        memcpy(a->ssid, b->ssid, sizeof(a->ssid));
+        a->ssid[FINDER_SSID_MAX - 1] = 0;
+        a->ssid_len = b->ssid_len;
+        a->channel = b->channel;
+        a->rssi = b->rssi;
+        a->hidden = b->ssid_len == 0;
+        a->has_load = b->has_load;
+        a->load_sta = b->load_sta;
+        a->load_util = b->load_util;
+        a->seen_sta = seen;
+        a->last_ms = b->last_ms;
+        const char *v = oui_lookup(b->bssid);
+        if (v) snprintf(a->vendor, sizeof(a->vendor), "%s", v);
+        else snprintf(a->vendor, sizeof(a->vendor), "%s",
+                      (b->bssid[0] & 0x02) ? "RANDOM" : "UNKNOWN");
+    }
+    xSemaphoreGive(s_tab_lock);
+
+    /* APs with associated STAs first, then strongest RSSI. */
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            int ci = tmp[i].seen_sta;
+            int cj = tmp[j].seen_sta;
+            if (tmp[i].has_load && tmp[i].load_sta > ci) ci = tmp[i].load_sta;
+            if (tmp[j].has_load && tmp[j].load_sta > cj) cj = tmp[j].load_sta;
+            bool swap = cj > ci ||
+                        (cj == ci && tmp[j].rssi > tmp[i].rssi) ||
+                        (cj == ci && tmp[j].rssi == tmp[i].rssi &&
+                         (tmp[j].channel < tmp[i].channel ||
+                          (tmp[j].channel == tmp[i].channel &&
+                           memcmp(tmp[j].bssid, tmp[i].bssid, 6) < 0)));
+            if (swap) {
+                finder_ap_t t = tmp[i];
+                tmp[i] = tmp[j];
+                tmp[j] = t;
+            }
+        }
+    }
+
+    if (n > max) n = max;
+    memcpy(out, tmp, (size_t)n * sizeof(*out));
+    return n;
+}
+
+int finder_snapshot_stas(const uint8_t bssid[6], finder_sta_t *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    static finder_sta_t tmp[CAND_TABLE_LEN];
+    int n = 0;
+    uint32_t now = now_ms();
+
+    xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+    for (int i = 0; i < CAND_TABLE_LEN; i++) {
+        cand_rec_t *c = &s_cand[i];
+        if (!c->used || now - c->last_ms > ACTIVE_MS) continue;
+        if (bssid && !mac_eq(c->bssid, bssid)) continue;
+        finder_sta_t *st = &tmp[n++];
+        memset(st, 0, sizeof(*st));
+        memcpy(st->mac, c->mac, 6);
+        st->rssi = c->rssi;
+        st->frames = c->frames;
+        st->last_ms = c->last_ms;
+        st->channel = c->channel;
+        st->local = c->local;
+        const char *v = oui_lookup(c->mac);
+        if (v) snprintf(st->vendor, sizeof(st->vendor), "%s", v);
+        else snprintf(st->vendor, sizeof(st->vendor), "%s",
+                      c->local ? "RANDOM" : "UNKNOWN");
+        if (c->probe_ssid_len) {
+            memcpy(st->probe_ssid, c->probe_ssid, c->probe_ssid_len);
+            st->probe_ssid[c->probe_ssid_len] = 0;
+            st->probe_ssid_len = c->probe_ssid_len;
+        }
+    }
+    xSemaphoreGive(s_tab_lock);
+
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            bool swap = tmp[j].last_ms > tmp[i].last_ms ||
+                        (tmp[j].last_ms == tmp[i].last_ms &&
+                         tmp[j].rssi > tmp[i].rssi);
+            if (swap) {
+                finder_sta_t t = tmp[i];
+                tmp[i] = tmp[j];
+                tmp[j] = t;
+            }
+        }
+    }
+
+    if (n > max) n = max;
+    memcpy(out, tmp, (size_t)n * sizeof(*out));
+    return n;
 }
 
 void finder_print_candidates(void)

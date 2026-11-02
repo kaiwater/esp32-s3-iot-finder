@@ -117,7 +117,7 @@ idf.py -p /dev/cu.usbserial-XXXX flash
 
 - `#` 在没有目标时直接进入 5 秒学习；有目标时锁定/解除锁定信道
 - 选择候选只改变目标，不会锁信道；只有按 `#` 才锁定，方便先收集再挑目标
-- `*` 在 FINDER 页打开菜单；在菜单 / INFO / SSID 页返回
+- `*` 在 FINDER 页打开菜单；在菜单 / INFO / AP LIST / AP DETAIL / STA LIST 页返回上一级
 - 长按 `*` 在 FINDER 页清除目标；长按 `#` 始终重新学习
 - 独立固件没有“退出该模式”这个上层页面，重启放在菜单 `REBOOT`
 
@@ -144,6 +144,7 @@ wnm                     打印 IE 67/69/98 计数
 tz CST-8                手动设置 POSIX 时区（兜底）
 timemode auto|direct|standard  选择 Time Value 解释方式
 timeclear               清除持久化 UTC/TSF 锚点并重新等待时间
+ui ap|detail|stas|find  调试：直接跳到 AP LIST / AP DETAIL / STA LIST / FINDER 页
 status                  打印当前状态
 reboot                  重启
 help                    帮助
@@ -181,8 +182,12 @@ help                    帮助
 - 顶栏不再显示 `2.4G`（本型号只有 2.4G Wi-Fi）
 - 深绿 PHO 主题，暗背景，强信号才提亮
 - 底部 `RF` 是 NRF 在当前 Wi-Fi 频道中心 1MHz 的 RPD 占用，**不是 dBm**
-- 非 ASCII SSID 在 FINDER 页显示 `SSID [UTF8]` / `SSID [GBK]`，进 `* -> SSID` 页看完整中文
-- SSID 页显示 BSSID、信道、AP BSS Load 和 5 行中文；两种编码都能解时 `#` 切换
+- 非 ASCII SSID 在 FINDER 页显示 `SSID [UTF8]` / `SSID [GBK]`
+- `* -> AP LIST` 打开 AP/SSID 树：AP 列表 → AP 详情 → STA 列表
+- AP 列表按“已见 STA / AP 报告 STA”排序，隐藏 AP 显示 `<AABBCC>`（BSSID 后 3 字节）
+- AP 详情显示 SSID、BSSID、厂商、信道、BSS Load、已见 STA 数
+- STA 列表显示 MAC、RSSI、厂商/probe SSID、最近出现；`#` 设为临时目标，`*` 返回
+- 设为目标不会锁信道；回到 FINDER 后再按 `#` 才锁定
 - 隐藏 SSID 显示 `SSID HIDDEN / AP ADVERTISES NO SSID`，BSSID 保留，可用 `stas` 按 AP 分组
 - 完全听不到 AP Beacon 才显示 `NO SSID / AP BEACON NOT HEARD`
 
@@ -262,8 +267,9 @@ SSID 是任意字节串，现场可能同时存在 UTF-8 和 GBK 两种编码。
   的两字节序列误判成希伯来文/希腊文
 - 非 ASCII SSID 用内置 **Noto Sans CJK SC 12x12** 点阵，覆盖
   U+4E00–U+9FFF、U+3000–U+303F、U+FF00–U+FFEF
-- FINDER 页显示 `SSID [UTF8]` / `SSID [GBK]`；`* -> SSID` 打开 SSID 页看完整中文
-- 如果两种解释都合法，SSID 页按 `#` 在 UTF8 / GBK 之间切换
+- FINDER 页显示 `SSID [UTF8]` / `SSID [GBK]`；`* -> AP LIST` 打开 AP/SSID 树
+- AP 列表、详情和 STA 列表都用同一套 UTF-8/GBK 自动判定和 CJK 点阵
+- 隐藏 SSID 在列表里显示 `<AABBCC>`，详情里标 `HIDDEN`
 - 点阵 + GBK 表约 0.5MB，2MB factory 分区仍有约 28% 余量
 - 生成脚本 `tools/gen-cjk-font.py`；字体许可见 `docs/OFL.txt`、`docs/FONT-NOTICE.md`
 
@@ -289,7 +295,7 @@ SSID 是任意字节串，现场可能同时存在 UTF-8 和 GBK 两种编码。
 - 服务时钟优先使用 WNM `Time Advertisement`（IE 69）+ 时区（IE 98）
 - UTC/TSF 锚点写入 NVS；finder 重启后用 TSF 差恢复，已同步的时钟不被旧广告拖回
 - 没有 WNM 数据时回退到 `esp_timer` 开机时间 `UP HH:MM`
-- 中文 SSID：UTF-8/GBK 双解码 + 12x12 CJK 点阵；SSID 页可手动切换编码
+- 中文 SSID：UTF-8/GBK 双解码 + 12x12 CJK 点阵；AP/STA 树使用同一套渲染
 - UI 状态机：FINDER / MENU / INFO / SSID；菜单承载学习、清除、峰值、信道、SSID、重启
 - OUI 厂商表由 `tools/gen-oui.py` 从 IEEE 公开 OUI 列表生成
 - NRF 只读 `RPD`，跟随当前 Wi-Fi 频道中心，8 次采样得到 0–100%

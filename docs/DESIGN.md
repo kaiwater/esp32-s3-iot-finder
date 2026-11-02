@@ -143,10 +143,14 @@ must be an explicit, opt-in command; the default stays passive.
 | `#` (K3) | lock/hop, or learn when no target | learn 5 s |
 | `*` (K4) | menu / back | clear target |
 
-Pages are a small state machine: FINDER, MENU, INFO, SSID.  The menu contains
-learn, clear, peak clear, channel, SSID, info and reboot.  Inside a menu or a
-detail page `*` returns one level; inside the menu `#` executes the selected
-item.  The FINDER page stays on the green-on-dark PHO palette.
+Pages are a small state machine: FINDER, MENU, INFO, AP LIST, AP DETAIL, STA
+LIST (and the older flat SSID page is kept for the target detail).  The menu
+contains learn, clear, peak clear, channel, AP LIST, info and reboot.  Inside
+a list/detail page `>`/`<` moves the selection, `#` enters the selected item
+and `*` returns one level.  The AP list is sorted by associated STA count then
+RSSI, includes hidden APs under `<AABBCC>` names, and the STA list sets a
+volatile target without locking the channel.  The FINDER page stays on the
+green-on-dark PHO palette.
 
 ## SSID encoding and CJK font
 

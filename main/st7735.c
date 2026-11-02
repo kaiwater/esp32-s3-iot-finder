@@ -464,6 +464,238 @@ static void draw_ssid_page(const finder_view_t *v, const ui_state_t *ui)
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
 }
 
+/* Single-line variant of draw_ssid_text, used by the AP/STA tree. */
+static int draw_ssid_line(int x, int y, const char *text, ssid_enc_t enc,
+                          int max_x, uint16_t color)
+{
+    size_t n = strlen(text);
+    size_t pos = 0;
+
+    while (pos < n) {
+        uint32_t cp;
+        size_t used = ssid_decode((const uint8_t *)text, n, pos, enc, &cp);
+        if (!used) break;
+        pos += used;
+
+        int adv = 8;
+        const uint8_t *glyph = NULL;
+        if (cp >= 0x80) {
+            glyph = cjk_glyph(cp);
+            adv = glyph ? 12 : 8;
+        }
+        if (x + adv > max_x) break;
+
+        if (cp >= 0x80 && glyph) {
+            draw_cjk12(x, y, glyph, color);
+        } else {
+            char one[2] = {(char)((cp >= 0x80) ? '?' : cp), 0};
+            text8(x, y + 2, one, 1, color);
+        }
+        x += adv;
+    }
+    return x;
+}
+
+static ssid_enc_t ap_ssid_enc(const finder_ap_t *a)
+{
+    if (!a->ssid_len) return SSID_ENC_ASCII;
+    size_t n = strlen(a->ssid);
+    if (!n) return SSID_ENC_ASCII;
+    return ssid_detect((const uint8_t *)a->ssid, n);
+}
+
+static void ap_name(const finder_ap_t *a, char *out, size_t n)
+{
+    if (a->hidden) {
+        snprintf(out, n, "<%02X%02X%02X>",
+                 a->bssid[3], a->bssid[4], a->bssid[5]);
+    } else {
+        snprintf(out, n, "%s", a->ssid);
+    }
+}
+
+#define AP_ROWS 8
+#define STA_ROWS 7
+#define AP_ROW_Y 16
+#define AP_ROW_H 13
+#define STA_ROW_Y 34
+#define STA_ROW_H 12
+
+static void draw_ap_list_page(const ui_state_t *ui)
+{
+    char buf[48], name[40];
+
+    clear_panel();
+    text3x5(2, 2, "AP LIST", 2, COL_ACCENT);
+    snprintf(buf, sizeof(buf), "%d AP", ui->ap_count);
+    text3x5(126, 3, buf, 1, COL_DIM);
+    rect(0, 12, WIDTH, 1, COL_DARK);
+
+    if (ui->ap_count == 0) {
+        text3x5(4, 38, "WAIT FOR AP BEACONS", 1, COL_DIM);
+        text3x5(4, 46, "KEEP CRUISING 1-13", 1, COL_DIM);
+    } else {
+        for (int row = 0; row < AP_ROWS; row++) {
+            int idx = ui->ap_scroll + row;
+            if (idx >= ui->ap_count) break;
+            const finder_ap_t *a = &ui->aps[idx];
+            int y = AP_ROW_Y + row * AP_ROW_H;
+            bool sel = idx == ui->ap_sel;
+            if (sel) rect(0, y - 1, WIDTH, AP_ROW_H, COL_DARK);
+
+            snprintf(buf, sizeof(buf), "%02u", a->channel);
+            text3x5(2, y + 4, buf, 1, sel ? COL_ACCENT : COL_DIM);
+
+            ap_name(a, name, sizeof(name));
+            if (a->hidden) {
+                text3x5(24, y + 4, name, 1, sel ? COL_ACCENT : COL_DIM);
+            } else {
+                draw_ssid_line(24, y, a->ssid, ap_ssid_enc(a), 128,
+                               sel ? COL_ACCENT : COL_TEXT);
+            }
+
+            if (a->has_load) {
+                snprintf(buf, sizeof(buf), "%u/%u", a->seen_sta, a->load_sta);
+            } else {
+                snprintf(buf, sizeof(buf), "%u", a->seen_sta);
+            }
+            text3x5(134, y + 4, buf, 1, sel ? COL_ACCENT : COL_DIM);
+        }
+    }
+
+    text3x5(2, 119, "> < MOVE  # INFO  * BACK", 1, COL_DIM);
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+}
+
+static void draw_ap_detail_page(const ui_state_t *ui)
+{
+    char buf[64], tmp[48], mac[18], age[16], name[40];
+    const finder_ap_t *a = NULL;
+    if (ui->ap_sel >= 0 && ui->ap_sel < ui->ap_count) a = &ui->aps[ui->ap_sel];
+
+    clear_panel();
+    text3x5(2, 2, "AP DETAIL", 2, COL_ACCENT);
+    rect(0, 12, WIDTH, 1, COL_DARK);
+
+    if (!a) {
+        text3x5(4, 40, "NO AP SELECTED", 1, COL_DIM);
+        text3x5(2, 119, "* BACK", 1, COL_ACCENT);
+        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+        if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+        return;
+    }
+
+    if (a->hidden) {
+        ap_name(a, name, sizeof(name));
+        text3x5(2, 14, name, 2, COL_WARN);
+        text3x5(100, 19, "HIDDEN", 1, COL_WARN);
+    } else {
+        draw_ssid_line(2, 14, a->ssid, ap_ssid_enc(a), 156, COL_TEXT);
+    }
+
+    mac_text(a->bssid, mac);
+    snprintf(buf, sizeof(buf), "BSSID %s", mac);
+    text3x5(2, 29, buf, 1, COL_TEXT);
+
+    fit_text(tmp, sizeof(tmp), a->vendor);
+    tmp[31] = 0;
+    text3x5(2, 36, "VENDOR", 1, COL_DIM);
+    text3x5(38, 36, tmp, 1, COL_TEXT);
+
+    snprintf(buf, sizeof(buf), "CH %u   SEEN %u STA", a->channel, a->seen_sta);
+    text3x5(2, 43, buf, 1, COL_TEXT);
+
+    if (a->has_load) {
+        unsigned pct = (a->load_util * 100u + 127u) / 255u;
+        snprintf(buf, sizeof(buf), "AP %u STA   %u%% BUSY", a->load_sta, pct);
+    } else {
+        snprintf(buf, sizeof(buf), "AP LOAD --");
+    }
+    text3x5(2, 50, buf, 1, COL_TEXT);
+
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    age_text(age, sizeof(age), now - a->last_ms, true);
+    if (a->rssi < -120) {
+        snprintf(buf, sizeof(buf), "RSSI --   LAST %s", age);
+    } else {
+        snprintf(buf, sizeof(buf), "RSSI %d dBm   LAST %s", a->rssi, age);
+    }
+    text3x5(2, 57, buf, 1, COL_TEXT);
+
+    if (a->seen_sta) {
+        snprintf(buf, sizeof(buf), "%u STA(s) currently seen", a->seen_sta);
+        text3x5(2, 71, buf, 1, COL_DIM);
+    } else {
+        text3x5(2, 71, "NO STA FRAMES SEEN YET", 1, COL_DIM);
+        text3x5(2, 78, "AP REPORT COUNT IS IN BSS LOAD", 1, COL_DIM);
+    }
+
+    text3x5(2, 119, "# STA LIST   * BACK", 1, COL_ACCENT);
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+}
+
+static void draw_sta_list_page(const ui_state_t *ui)
+{
+    char buf[64], mac[18], age[16], name[40], ven[16];
+    const finder_ap_t *a = NULL;
+    if (ui->ap_sel >= 0 && ui->ap_sel < ui->ap_count) a = &ui->aps[ui->ap_sel];
+
+    clear_panel();
+    text3x5(2, 2, "STA LIST", 2, COL_ACCENT);
+    snprintf(buf, sizeof(buf), "%d STA", ui->sta_count);
+    text3x5(126, 3, buf, 1, COL_DIM);
+    rect(0, 12, WIDTH, 1, COL_DARK);
+
+    if (a) {
+        if (a->hidden) {
+            ap_name(a, name, sizeof(name));
+            text3x5(2, 14, name, 1, COL_WARN);
+        } else {
+            draw_ssid_line(2, 13, a->ssid, ap_ssid_enc(a), 132, COL_DIM);
+        }
+        mac_text(a->bssid, mac);
+        snprintf(buf, sizeof(buf), "AP %s", mac);
+        text3x5(2, 27, buf, 1, COL_DIM);
+    }
+
+    if (!ui->sta_count) {
+        text3x5(4, 42, "NO STA SEEN ON THIS AP", 1, COL_DIM);
+        text3x5(4, 50, "ACTIVE 60S / ALL CHANNELS", 1, COL_DIM);
+    } else {
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        for (int row = 0; row < STA_ROWS; row++) {
+            int idx = ui->sta_scroll + row;
+            if (idx >= ui->sta_count) break;
+            const finder_sta_t *st = &ui->stas[idx];
+            int y = STA_ROW_Y + row * STA_ROW_H;
+            bool sel = idx == ui->sta_sel;
+            if (sel) rect(0, y - 1, WIDTH, STA_ROW_H, COL_DARK);
+
+            mac_text(st->mac, mac);
+            text3x5(2, y + 2, mac, 1, sel ? COL_ACCENT : COL_TEXT);
+
+            snprintf(buf, sizeof(buf), "%d", st->rssi);
+            text3x5(74, y + 2, buf, 1, sel ? COL_ACCENT : COL_DIM);
+
+            if (st->probe_ssid_len) {
+                snprintf(ven, sizeof(ven), "%.8s", st->probe_ssid);
+            } else {
+                snprintf(ven, sizeof(ven), "%.8s", st->vendor);
+            }
+            text3x5(92, y + 2, ven, 1, sel ? COL_ACCENT : COL_DIM);
+
+            age_text(age, sizeof(age), now - st->last_ms, true);
+            text3x5(136, y + 2, age, 1, sel ? COL_ACCENT : COL_DIM);
+        }
+    }
+
+    text3x5(2, 119, "# TARGET   * BACK", 1, COL_ACCENT);
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+}
+
 static void menu_label(int item, const finder_view_t *v, char *out, size_t n)
 {
     switch (item) {
@@ -473,7 +705,7 @@ static void menu_label(int item, const finder_view_t *v, char *out, size_t n)
     case UI_MENU_CHAN:
         snprintf(out, n, "CHAN %s", mode_name(v->chan_mode));
         break;
-    case UI_MENU_SSID: snprintf(out, n, "SSID"); break;
+    case UI_MENU_SSID: snprintf(out, n, "AP LIST"); break;
     case UI_MENU_INFO: snprintf(out, n, "INFO"); break;
     case UI_MENU_REBOOT: snprintf(out, n, "REBOOT"); break;
     default: snprintf(out, n, "--"); break;
@@ -681,7 +913,7 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
     if (v->have_ssid) {
         if (v->ssid_nonascii) {
             ssid_enc_t e = ssid_detect((const uint8_t *)v->ssid, strlen(v->ssid));
-            snprintf(buf, sizeof(buf), "SSID [%s]  * MENU > SSID", ssid_enc_name(e));
+            snprintf(buf, sizeof(buf), "SSID [%s]  * MENU > AP LIST", ssid_enc_name(e));
         } else {
             fit_text(tmp, sizeof(tmp), v->ssid);
             snprintf(buf, sizeof(buf), "SSID %s", tmp);
@@ -710,14 +942,22 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
              (unsigned long)v->fps, pk, (unsigned long)v->age_ms);
     text3x5(2, 59, buf, 1, COL_TEXT);
 
-    if (v->have_ap_load) {
+    if (v->nrf_ok && v->nrf_csn >= 0) {
+        if (v->have_ap_load) {
+            unsigned ap_pct = (v->ap_load * 100u + 127u) / 255u;
+            snprintf(buf, sizeof(buf), "LINK %s RF OK C%d %u%% AP %u%%/%u",
+                     link_name(v->link), v->nrf_csn, v->nrf_duty,
+                     ap_pct, v->ap_sta_count);
+        } else {
+            snprintf(buf, sizeof(buf), "LINK %s RF OK C%d %u%%",
+                     link_name(v->link), v->nrf_csn, v->nrf_duty);
+        }
+    } else if (v->have_ap_load) {
         unsigned ap_pct = (v->ap_load * 100u + 127u) / 255u;
-        snprintf(buf, sizeof(buf), "LINK %s  RF %s %u%%  AP %u%%/%u",
-                 link_name(v->link), v->nrf_ok ? "OK" : "--", v->nrf_duty,
-                 ap_pct, v->ap_sta_count);
+        snprintf(buf, sizeof(buf), "LINK %s RF -- AP %u%%/%u",
+                 link_name(v->link), ap_pct, v->ap_sta_count);
     } else {
-        snprintf(buf, sizeof(buf), "LINK %s  RF %s %u%%", link_name(v->link),
-                 v->nrf_ok ? "OK" : "--", v->nrf_duty);
+        snprintf(buf, sizeof(buf), "LINK %s RF --", link_name(v->link));
     }
     text3x5(2, 66, buf, 1, COL_TEXT);
 
@@ -733,7 +973,7 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
     text3x5(2, 89, "HOLD >/<  CHANNEL", 1, COL_DIM);
     text3x5(2, 96, "# LOCK/HOP  HOLD # LEARN", 1, COL_DIM);
     text3x5(2, 103, "* BACK  HOLD * CLR/FINDER", 1, COL_DIM);
-    text3x5(2, 110, "SSID PAGE: * MENU > SSID", 1, COL_DIM);
+    text3x5(2, 110, "AP LIST: * MENU > AP LIST", 1, COL_DIM);
 
     char src[16] = "--";
     if (c && c->synced && c->have_source) {
@@ -755,6 +995,9 @@ void st7735_draw_finder(const finder_view_t *v, const wnm_clock_view_t *c,
     case UI_PAGE_MENU: draw_menu_page(v, ui); break;
     case UI_PAGE_INFO: draw_info_page(v, c); break;
     case UI_PAGE_SSID: draw_ssid_page(v, ui); break;
+    case UI_PAGE_AP_LIST: draw_ap_list_page(ui); break;
+    case UI_PAGE_AP_DETAIL: draw_ap_detail_page(ui); break;
+    case UI_PAGE_AP_STAS: draw_sta_list_page(ui); break;
     case UI_PAGE_FIND:
     default: draw_finder_page(v, c); break;
     }

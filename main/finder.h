@@ -6,6 +6,35 @@
 #define FINDER_SSID_MAX 33
 #define FINDER_VENDOR_MAX 48
 #define FINDER_TOAST_MAX 48
+#define FINDER_AP_MAX 16
+#define FINDER_STA_MAX 16
+
+typedef struct {
+    uint8_t bssid[6];
+    char ssid[FINDER_SSID_MAX];
+    uint8_t ssid_len;
+    uint8_t channel;
+    int8_t rssi;
+    bool hidden;
+    bool has_load;
+    uint16_t load_sta;
+    uint8_t load_util;
+    uint8_t seen_sta;
+    uint32_t last_ms;
+    char vendor[FINDER_VENDOR_MAX];
+} finder_ap_t;
+
+typedef struct {
+    uint8_t mac[6];
+    int8_t rssi;
+    uint32_t frames;
+    uint32_t last_ms;
+    uint8_t channel;
+    bool local;
+    char vendor[FINDER_VENDOR_MAX];
+    char probe_ssid[FINDER_SSID_MAX];
+    uint8_t probe_ssid_len;
+} finder_sta_t;
 
 typedef enum {
     FINDER_LINK_NONE = 0,
@@ -66,6 +95,7 @@ typedef struct {
     uint32_t best_frames;
 
     bool nrf_ok;
+    int8_t nrf_csn;
     uint8_t nrf_duty;
 
     char toast[FINDER_TOAST_MAX];
@@ -76,6 +106,7 @@ bool finder_init(void);
 void finder_poll(finder_view_t *v);
 
 bool finder_set_target(const uint8_t mac[6], const char *why);
+void finder_set_target_temp(const uint8_t mac[6], const char *why, uint8_t ch);
 bool finder_set_target_str(const char *text);
 void finder_clear_target(void);
 void finder_next_candidate(void);
@@ -86,6 +117,8 @@ void finder_next_channel(void);
 void finder_prev_channel(void);
 void finder_clear_peak(void);
 
+int finder_snapshot_aps(finder_ap_t *out, int max);
+int finder_snapshot_stas(const uint8_t bssid[6], finder_sta_t *out, int max);
 void finder_print_candidates(void);
 void finder_print_stas_by_ap(void);
 void finder_print_bss(void);
