@@ -44,23 +44,129 @@
 
 #define BTN_LONG_MS 700
 
-/* This panel's colour filter/wiring maps green and blue swapped.  Pack B in
- * the green field and G in the blue field so the displayed hue is correct. */
+/* Colour pipeline for this panel (verified with the on-device COLOR TEST page):
+ *
+ *   raw RGB565 + MADCTL BGR  ->  green/blue swap
+ *                                (dark green looks blue, yellow looks magenta)
+ *
+ * So on this panel the BGR bit swaps G/B, not R/B.  Two swaps cancel: pack B
+ * in the green field and G in the blue field here, and keep the panel on
+ * LCD_RGB_ELEMENT_ORDER_BGR.  Do not change one without the other.
+ *
+ * Do not "fix" this by switching the panel to RGB: that removes only one of
+ * the two swaps and leaves green/blue inverted. */
 #define RGB565(r, g, b) ((uint16_t)((((r) >> 3) << 11) | (((b) >> 2) << 5) | ((g) >> 3)))
 
-#define COL_BG     RGB565(0x00, 0x14, 0x08)
-#define COL_TEXT   RGB565(0xD8, 0xFF, 0xE4)
-#define COL_ACCENT RGB565(0x38, 0xFF, 0x78)
-#define COL_DIM    RGB565(0x18, 0x7A, 0x3C)
-#define COL_DARK   RGB565(0x04, 0x24, 0x14)
-#define COL_WARN   RGB565(0xFF, 0xD0, 0x20)
-#define COL_ORANGE RGB565(0xFF, 0x70, 0x10)
-#define COL_RED    RGB565(0xFF, 0x30, 0x30)
-/* RF scan bars: original dark bed, yellow average, dark-red/deep-orange peak. */
-#define COL_RF_BG   COL_DARK
-#define COL_RF_AVG  RGB565(0xFF, 0xD8, 0x00)
-#define COL_RF_PEAK RGB565(0xA0, 0x10, 0x08)
-#define COL_RF_HOT  RGB565(0xE0, 0x40, 0x00)
+/* Runtime palette.  The whole UI reads these variables, so the long-press
+ * theme key can recolour every page without a reboot. */
+static uint16_t col_bg, col_text, col_accent, col_dim, col_dark;
+static uint16_t col_warn, col_orange, col_red;
+static uint16_t col_rf_bg, col_rf_avg, col_rf_peak, col_rf_hot;
+
+#define COL_BG     col_bg
+#define COL_TEXT   col_text
+#define COL_ACCENT col_accent
+#define COL_DIM    col_dim
+#define COL_DARK   col_dark
+#define COL_WARN   col_warn
+#define COL_ORANGE col_orange
+#define COL_RED    col_red
+#define COL_RF_BG   col_rf_bg
+#define COL_RF_AVG  col_rf_avg
+#define COL_RF_PEAK col_rf_peak
+#define COL_RF_HOT  col_rf_hot
+
+typedef struct {
+    const char *name;
+    uint8_t bg[3];
+    uint8_t text[3];
+    uint8_t accent[3];
+    uint8_t dim[3];
+    uint8_t dark[3];
+    uint8_t warn[3];
+    uint8_t orange[3];
+    uint8_t red[3];
+} ui_theme_t;
+
+static const ui_theme_t s_themes[] = {
+    /* 0 PHO: the original dark-green terminal */
+    {"PHO",     {0x00,0x12,0x00}, {0xD8,0xFF,0xE4}, {0x38,0xFF,0x78},
+                {0x18,0x7A,0x3C}, {0x00,0x24,0x00}, {0xFF,0xFF,0x00},
+                {0xFF,0x80,0x00}, {0xFF,0x00,0x00}},
+    /* 1 AMBER */
+    {"AMBER",   {0x18,0x08,0x00}, {0xFF,0xE0,0xB0}, {0xFF,0xB0,0x20},
+                {0xA0,0x60,0x10}, {0x30,0x12,0x00}, {0xFF,0xD0,0x20},
+                {0xFF,0x80,0x10}, {0xFF,0x30,0x20}},
+    /* 2 ICE */
+    {"ICE",     {0x00,0x08,0x20}, {0xD0,0xF0,0xFF}, {0x40,0xC0,0xFF},
+                {0x20,0x70,0xA0}, {0x00,0x20,0x40}, {0xFF,0xE0,0x60},
+                {0xFF,0x80,0x20}, {0xFF,0x40,0x60}},
+    /* 3 MAGENTA */
+    {"MAGENTA", {0x18,0x00,0x18}, {0xFF,0xD0,0xF0}, {0xFF,0x40,0xC0},
+                {0xA0,0x20,0x70}, {0x30,0x00,0x30}, {0xFF,0xE0,0x40},
+                {0xFF,0x80,0x20}, {0xFF,0x30,0x40}},
+    /* 4 RED ALERT */
+    {"RED",     {0x20,0x00,0x00}, {0xFF,0xD0,0xC0}, {0xFF,0x50,0x40},
+                {0xA0,0x20,0x20}, {0x40,0x00,0x00}, {0xFF,0xC0,0x20},
+                {0xFF,0x70,0x10}, {0xFF,0x20,0x20}},
+    /* 5 TEAL */
+    {"TEAL",    {0x00,0x16,0x16}, {0xC0,0xFF,0xF0}, {0x30,0xE0,0xC0},
+                {0x20,0x80,0x70}, {0x00,0x32,0x30}, {0xFF,0xD0,0x30},
+                {0xFF,0x80,0x20}, {0xFF,0x40,0x40}},
+    /* 6 BLUE/WHITE */
+    {"BLUE",    {0x00,0x00,0x10}, {0xE0,0xE8,0xFF}, {0x80,0xC0,0xFF},
+                {0x40,0x70,0xA0}, {0x10,0x10,0x30}, {0xFF,0xE0,0x60},
+                {0xFF,0x80,0x20}, {0xFF,0x40,0x40}},
+    /* 7 SOLAR */
+    {"SOLAR",   {0x16,0x12,0x00}, {0xFF,0xF0,0xC0}, {0xFF,0xE0,0x40},
+                {0xA0,0x80,0x20}, {0x32,0x24,0x00}, {0xFF,0xFF,0x60},
+                {0xFF,0xA0,0x20}, {0xFF,0x50,0x20}},
+    /* 8 VIOLET */
+    {"VIOLET",  {0x0A,0x00,0x18}, {0xE0,0xD0,0xFF}, {0xA0,0x80,0xFF},
+                {0x60,0x40,0xA0}, {0x20,0x00,0x30}, {0xFF,0xE0,0x40},
+                {0xFF,0x80,0x30}, {0xFF,0x40,0x60}},
+    /* 9 LIME */
+    {"LIME",    {0x00,0x16,0x00}, {0xE0,0xFF,0xC0}, {0xA0,0xFF,0x20},
+                {0x50,0x90,0x10}, {0x00,0x32,0x00}, {0xFF,0xE0,0x20},
+                {0xFF,0x90,0x10}, {0xFF,0x30,0x20}},
+};
+#define THEME_COUNT ((int)(sizeof(s_themes) / sizeof(s_themes[0])))
+static uint8_t s_theme_index;
+
+static void apply_theme(uint8_t n)
+{
+    if (n >= THEME_COUNT) n = 0;
+    s_theme_index = n;
+    const ui_theme_t *t = &s_themes[n];
+    col_bg     = RGB565(t->bg[0], t->bg[1], t->bg[2]);
+    col_text   = RGB565(t->text[0], t->text[1], t->text[2]);
+    col_accent = RGB565(t->accent[0], t->accent[1], t->accent[2]);
+    col_dim    = RGB565(t->dim[0], t->dim[1], t->dim[2]);
+    col_dark   = RGB565(t->dark[0], t->dark[1], t->dark[2]);
+    col_warn   = RGB565(t->warn[0], t->warn[1], t->warn[2]);
+    col_orange = RGB565(t->orange[0], t->orange[1], t->orange[2]);
+    col_red    = RGB565(t->red[0], t->red[1], t->red[2]);
+    col_rf_bg   = col_dark;
+    col_rf_avg  = col_warn;
+    col_rf_peak = col_red;
+    col_rf_hot  = col_orange;
+}
+
+int st7735_next_theme(void)
+{
+    apply_theme((uint8_t)((s_theme_index + 1) % THEME_COUNT));
+    return s_theme_index;
+}
+
+int st7735_theme(void)
+{
+    return s_theme_index;
+}
+
+const char *st7735_theme_name(void)
+{
+    return s_themes[s_theme_index].name;
+}
 
 static const char *TAG = "st7735";
 static esp_lcd_panel_handle_t s_panel;
@@ -505,6 +611,11 @@ static int draw_ssid_line(int x, int y, const char *text, ssid_enc_t enc,
     return x;
 }
 
+static void cjk_line(int x, int y, const char *s, uint16_t color)
+{
+    draw_ssid_line(x, y, s, SSID_ENC_UTF8, 156, color);
+}
+
 static ssid_enc_t ap_ssid_enc(const finder_ap_t *a, ssid_enc_t pref)
 {
     if (!a->ssid_len || a->binary) return SSID_ENC_ASCII;
@@ -768,7 +879,7 @@ static void draw_rf_scan_page(const ui_state_t *ui)
     nrf_scan_ch_t sc[NRF_SCAN_CHANNELS];
     nrf_aux_scan_get(sc, NRF_SCAN_CHANNELS);
 
-    char buf[32];
+    char buf[64];
     clear_panel();
     text3x5(2, 2, "RF SCAN", 2, COL_ACCENT);
     if (nrf_aux_ok()) {
@@ -816,8 +927,71 @@ static void draw_rf_scan_page(const ui_state_t *ui)
         text3x5(x + (ch < 9 ? 2 : 0), 104, num, 1, COL_DIM);
     }
 
-    text3x5(2, 112, "BAR=PEAK INNER=AVG", 1, COL_DIM);
-    text3x5(2, 119, "# RESET  * BACK", 1, COL_ACCENT);
+    int best = -1;
+    uint8_t best_peak = 0;
+    for (int ch = 0; ch < NRF_SCAN_CHANNELS; ch++) {
+        if (sc[ch].peak > best_peak) {
+            best_peak = sc[ch].peak;
+            best = ch;
+        }
+    }
+    if (best >= 0) {
+        uint32_t age_s = sc[best].peak_age_ms / 1000;
+        if (age_s > 99) age_s = 99;
+        snprintf(buf, sizeof(buf), "CH%u PK%u AGE%lus HIT%u/%u",
+                 best + 1, best_peak, (unsigned long)age_s,
+                 sc[best].hits, sc[best].sweeps);
+        text3x5(2, 112, buf, 1, COL_WARN);
+    } else {
+        text3x5(2, 112, "NO ENERGY YET", 1, COL_DIM);
+    }
+    text3x5(2, 119, "# HELP  HOLD# RESET  * BACK", 1, COL_ACCENT);
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+}
+
+static void draw_rf_help_page(void)
+{
+    clear_panel();
+    cjk_line(2, 2, "RF 扫描说明", COL_ACCENT);
+    rect(0, 15, WIDTH, 1, COL_DARK);
+
+    cjk_line(2, 18, "1. 柱=信道1-13", COL_TEXT);
+    cjk_line(2, 31, "2. 外柱=峰值保持", COL_TEXT);
+    cjk_line(2, 44, "3. 内柱=平均值", COL_TEXT);
+    cjk_line(2, 57, "4. 短按#=本说明", COL_TEXT);
+    cjk_line(2, 70, "5. 长按#=清空峰值", COL_TEXT);
+    cjk_line(2, 83, "6. * = 返回", COL_TEXT);
+    cjk_line(2, 96, "7. 长按*=换主题", COL_TEXT);
+    text3x5(2, 108, "PK=PEAK AGE=SEC HIT=CNT", 1, COL_DIM);
+    text3x5(2, 119, "* BACK", 1, COL_ACCENT);
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+}
+
+static void draw_color_test_page(void)
+{
+    static const uint16_t bars[8] = {
+        RGB565(0xFF, 0x00, 0x00), /* R */
+        RGB565(0x00, 0xFF, 0x00), /* G */
+        RGB565(0x00, 0x00, 0xFF), /* B */
+        RGB565(0xFF, 0xFF, 0x00), /* Y */
+        RGB565(0x00, 0xFF, 0xFF), /* C */
+        RGB565(0xFF, 0x00, 0xFF), /* M */
+        RGB565(0xFF, 0xFF, 0xFF), /* W */
+        RGB565(0x00, 0x00, 0x00), /* K */
+    };
+    static const char *names[8] = {"R","G","B","Y","C","M","W","K"};
+
+    clear_panel();
+    text3x5(2, 2, "COLOR TEST", 2, COL_TEXT);
+    rect(0, 12, WIDTH, 1, COL_DARK);
+    for (int i = 0; i < 8; i++) {
+        int x = 4 + i * 19;
+        rect(x, 24, 16, 78, bars[i]);
+        text3x5(x + 6, 106, names[i], 1, COL_TEXT);
+    }
+    text3x5(2, 119, "* BACK", 1, COL_ACCENT);
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
 }
@@ -954,7 +1128,7 @@ static void draw_finder_page(const finder_view_t *v, const wnm_clock_view_t *c)
     if (v->learning) {
         text3x5(2, 121, "HOLD STILL", 1, COL_DIM);
     } else {
-        text3x5(2, 121, "HOLD >/< CH   HOLD # LEARN", 1, COL_DIM);
+        text3x5(2, 121, "HOLD >/< CH   HOLD * THEME", 1, COL_DIM);
     }
 
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
@@ -1060,7 +1234,7 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
     text3x5(2, 82, "> NEXT CAND   < PREV CAND", 1, COL_DIM);
     text3x5(2, 89, "HOLD >/<  CHANNEL", 1, COL_DIM);
     text3x5(2, 96, "# LOCK/HOP  HOLD # LEARN", 1, COL_DIM);
-    text3x5(2, 103, "* BACK  HOLD * CLR/FINDER", 1, COL_DIM);
+    text3x5(2, 103, "* MENU/BACK  HOLD * THEME", 1, COL_DIM);
     text3x5(2, 110, "AP LIST: * MENU > AP LIST", 1, COL_DIM);
 
     char src[16] = "--";
@@ -1087,6 +1261,8 @@ void st7735_draw_finder(const finder_view_t *v, const wnm_clock_view_t *c,
     case UI_PAGE_AP_DETAIL: draw_ap_detail_page(ui); break;
     case UI_PAGE_AP_STAS: draw_sta_list_page(ui); break;
     case UI_PAGE_RF_SCAN: draw_rf_scan_page(ui); break;
+    case UI_PAGE_RF_HELP: draw_rf_help_page(); break;
+    case UI_PAGE_COLOR_TEST: draw_color_test_page(); break;
     case UI_PAGE_FIND:
     default: draw_finder_page(v, c); break;
     }
@@ -1104,6 +1280,7 @@ static bool on_color_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_d
 
 void st7735_init(void)
 {
+    apply_theme(0);
     const spi_bus_config_t buscfg = {
         .sclk_io_num = PIN_SCK,
         .mosi_io_num = PIN_MOSI,

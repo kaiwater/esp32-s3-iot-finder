@@ -31,6 +31,9 @@ static volatile bool s_scan;
 static volatile uint32_t s_scan_cycles;
 static portMUX_TYPE s_scan_mux = portMUX_INITIALIZER_UNLOCKED;
 static nrf_scan_ch_t s_scan_data[NRF_SCAN_CHANNELS];
+static uint32_t s_peak_ms[NRF_SCAN_CHANNELS];
+static uint32_t s_last_ms[NRF_SCAN_CHANNELS];
+#define RF_HIT_PCT 25u
 static const int s_csn[NRF_MODULE_COUNT] = NRF_CSN_PINS;
 static const int s_ce[NRF_MODULE_COUNT] = NRF_CE_PINS;
 
@@ -98,10 +101,24 @@ static bool open_radio(void)
 
 static void scan_store(int ch, uint8_t pct)
 {
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
     portENTER_CRITICAL(&s_scan_mux);
     nrf_scan_ch_t *sc = &s_scan_data[ch - 1];
     sc->last = pct;
-    if (pct > sc->peak) sc->peak = pct;
+    sc->sweeps++;
+    if (pct >= RF_HIT_PCT) {
+        if (sc->hits < 0xFFFF) sc->hits++;
+        if (sc->streak < 0xFF) sc->streak++;
+        if (sc->streak > sc->max_streak) sc->max_streak = sc->streak;
+    } else {
+        sc->streak = 0;
+    }
+    if (pct > 0 && pct >= sc->peak) {
+        sc->peak = pct;
+        s_peak_ms[ch - 1] = now; /* refresh age when the peak recurs */
+    }
+    if (pct > 0) s_last_ms[ch - 1] = now;
     sc->avg = (uint8_t)((sc->avg * 3u + pct) / 4u);
     portEXIT_CRITICAL(&s_scan_mux);
 }
@@ -286,6 +303,8 @@ void nrf_aux_scan(bool on)
     if (on) {
         portENTER_CRITICAL(&s_scan_mux);
         memset(s_scan_data, 0, sizeof(s_scan_data));
+        memset(s_peak_ms, 0, sizeof(s_peak_ms));
+        memset(s_last_ms, 0, sizeof(s_last_ms));
         s_scan_cycles = 0;
         portEXIT_CRITICAL(&s_scan_mux);
     }
@@ -301,8 +320,13 @@ void nrf_aux_scan_get(nrf_scan_ch_t *out, int max)
 {
     if (!out || max <= 0) return;
     if (max > NRF_SCAN_CHANNELS) max = NRF_SCAN_CHANNELS;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     portENTER_CRITICAL(&s_scan_mux);
     memcpy(out, s_scan_data, (size_t)max * sizeof(*out));
+    for (int i = 0; i < max; i++) {
+        out[i].peak_age_ms = out[i].peak ? now - s_peak_ms[i] : 0;
+        out[i].last_age_ms = out[i].last ? now - s_last_ms[i] : 0;
+    }
     portEXIT_CRITICAL(&s_scan_mux);
 }
 

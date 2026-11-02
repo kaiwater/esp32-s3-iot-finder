@@ -16,9 +16,15 @@ uint8_t nrf_aux_duty(void);
 #define NRF_SCAN_CHANNELS 13
 
 typedef struct {
-    uint8_t peak; /* max RPD duty over the scan, 0..100 */
-    uint8_t avg;  /* smoothed RPD duty, 0..100 */
-    uint8_t last; /* latest RPD duty, 0..100 */
+    uint8_t peak;    /* max RPD duty over the scan, 0..100 */
+    uint8_t avg;     /* smoothed RPD duty, 0..100 */
+    uint8_t last;    /* latest RPD duty, 0..100 */
+    uint16_t hits;   /* sweeps with >=25% duty */
+    uint16_t sweeps; /* total sweeps for this channel */
+    uint8_t streak;  /* consecutive hit sweeps */
+    uint8_t max_streak;
+    uint32_t peak_age_ms; /* time since the peak was last seen */
+    uint32_t last_age_ms; /* time since any energy was seen */
 } nrf_scan_ch_t;
 
 /* Channel-energy scan.  While active the NRF leaves the Wi-Fi channel and

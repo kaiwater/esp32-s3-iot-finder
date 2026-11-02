@@ -117,14 +117,15 @@ idf.py -p /dev/cu.usbserial-XXXX flash
 | K1 | `>` | 下一个候选目标 | 下一信道（手动锁定） |
 | K2 | `<` | 上一个候选目标 | 上一信道（手动锁定） |
 | K3 | `#` | 有目标：锁定 / 解除锁定信道；无目标：学习 | 重新学习目标（5 秒） |
-| K4 | `*` | 打开菜单 / 返回上一页 | 清除目标 MAC |
+| K4 | `*` | 打开菜单 / 返回上一页 | 切换主题（10 套配色） |
 
 菜单内：`>` / `<` 上下移动，`#` 确认，`*` 返回 FINDER。
 
 - `#` 在没有目标时直接进入 5 秒学习；有目标时锁定/解除锁定信道
 - 选择候选只改变目标，不会锁信道；只有按 `#` 才锁定，方便先收集再挑目标
 - `*` 在 FINDER 页打开菜单；在菜单 / INFO / AP LIST / AP DETAIL / STA LIST 页返回上一级
-- 长按 `*` 在 FINDER 页清除目标；长按 `#` 始终重新学习
+- 长按 `*` 循环切换 10 套配色；清除目标用菜单 `CLEAR TARGET`
+- 长按 `#` 始终重新学习
 - 独立固件没有“退出该模式”这个上层页面，重启放在菜单 `REBOOT`
 
 ### 6. 串口命令
@@ -150,7 +151,8 @@ wnm                     打印 IE 67/69/98 计数
 tz CST-8                手动设置 POSIX 时区（兜底）
 timemode auto|direct|standard  选择 Time Value 解释方式
 timeclear               清除持久化 UTC/TSF 锚点并重新等待时间
-ui ap|detail|stas|rf|find  调试：直接跳到 AP LIST / AP DETAIL / STA LIST / RF SCAN / FINDER
+ui ap|detail|stas|rf|help|color|find  调试：跳 AP LIST / AP DETAIL / STA LIST / RF SCAN / 帮助 / 色柱 / FINDER
+theme                   调试：循环 10 套配色
 status                  打印当前状态
 reboot                  重启
 help                    帮助
@@ -186,7 +188,8 @@ help                    帮助
 - 没有 WNM 时间时显示 `UP HH:MM:SS`（本次开机后的服务时钟，本机不联网）
 - 另有 2x5 数字小字库，用于 `PEAK / FPS / CAND` 这类次要数字，不挤占主 RSSI 区域
 - 顶栏不再显示 `2.4G`（本型号只有 2.4G Wi-Fi）
-- 深绿 PHO 主题，暗背景，强信号才提亮
+- 默认深绿 PHO 主题，暗背景，强信号才提亮
+- 长按 `*` 循环 10 套配色：PHO / AMBER / ICE / MAGENTA / RED / TEAL / BLUE / SOLAR / VIOLET / LIME
 - 底部 `RF` 是 NRF 在当前 Wi-Fi 频道中心 1MHz 的 RPD 占用，**不是 dBm**
 - 非 ASCII SSID 在 FINDER 页显示 `SSID [UTF8]` / `SSID [GBK]`
 - `* -> AP LIST` 打开 AP/SSID 树：AP 列表 → AP 详情 → STA 列表
@@ -199,6 +202,18 @@ help                    帮助
 - 隐藏 SSID 显示 `<AABBCC>`，详情标 `HIDDEN`
 - 隐藏 SSID 显示 `SSID HIDDEN / AP ADVERTISES NO SSID`，BSSID 保留，可用 `stas` 按 AP 分组
 - 完全听不到 AP Beacon 才显示 `NO SSID / AP BEACON NOT HEARD`
+
+### RF SCAN 页
+
+- 短按 `#`：打开中文使用说明
+- 长按 `#`：清空峰值重新开始
+- 短按 `*`：停止扫描并返回
+- 长按 `*`：切换主题（任意页面都可）
+- 底部摘要 `CHn PKxx AGEnn s HITx/y`：
+  - `PK` 峰值百分比
+  - `AGE` 该峰值最后一次出现距今多久
+  - `HIT` 出现过 ≥25% 能量的轮数 / 总轮数
+- 每根柱外层是峰值保持，内层是平均值；`rfdata` 可看到 streak/max_streak
 
 ---
 

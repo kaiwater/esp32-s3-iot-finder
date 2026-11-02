@@ -209,6 +209,12 @@ samples (8 ms), and the peak is retained across sweeps until reset.  The screen 
 smoothed average as the inner bar, which is the useful view for a frequency
 hopper: a single visit to a channel leaves a visible peak.
 
+The UI palette is runtime-variable.  Long `*` cycles ten theme tables
+(PHO/AMBER/ICE/MAGENTA/RED/TEAL/BLUE/SOLAR/VIOLET/LIME); every page and the
+RF bars pick up the new colours on the next frame.  The RF scan keeps
+per-channel peak/avg/last plus `hits`, `sweeps`, `streak`, `max_streak` and
+`peak_age_ms`; the page shows the best channel's peak age and hit ratio.
+
 AP SSIDs are marked binary when they contain control bytes or are not valid
 UTF-8/GBK; those are drawn as `<AABBCC>` instead of attempting a lossy decode.
 The AP pages carry an `AUTO / U8 / GBK` tag and long `#` cycles the encoding

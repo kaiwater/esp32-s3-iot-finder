@@ -8,6 +8,9 @@
 #define UI_STA_ROWS 7
 
 void st7735_init(void);
+int st7735_next_theme(void);
+int st7735_theme(void);
+const char *st7735_theme_name(void);
 typedef enum {
     UI_PAGE_FIND = 0,
     UI_PAGE_MENU,
@@ -17,6 +20,8 @@ typedef enum {
     UI_PAGE_AP_DETAIL,
     UI_PAGE_AP_STAS,
     UI_PAGE_RF_SCAN,
+    UI_PAGE_RF_HELP,
+    UI_PAGE_COLOR_TEST,
 } ui_page_t;
 
 enum {

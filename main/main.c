@@ -142,12 +142,32 @@ static void menu_execute(void)
 
 static void handle_event(int b)
 {
+    if (b == 14) {
+        int t = st7735_next_theme();
+        finder_toast("THEME %d %s", t + 1, st7735_theme_name());
+        return;
+    }
+
+    if (s_ui.page == UI_PAGE_COLOR_TEST) {
+        if (b == 4) s_ui.page = UI_PAGE_FIND;
+        return;
+    }
+
     if (s_ui.page == UI_PAGE_RF_SCAN) {
         if (b == 3) {
-            nrf_aux_scan(true); /* restart / clear peaks */
+            s_ui.page = UI_PAGE_RF_HELP;
+        } else if (b == 13) {
+            nrf_aux_scan(true); /* long #: restart / clear peaks */
         } else if (b == 4 || b == 14) {
             nrf_aux_scan(false);
             s_ui.page = UI_PAGE_MENU;
+        }
+        return;
+    }
+
+    if (s_ui.page == UI_PAGE_RF_HELP) {
+        if (b == 4 || b == 14 || b == 3) {
+            s_ui.page = UI_PAGE_RF_SCAN;
         }
         return;
     }
@@ -245,7 +265,6 @@ static void handle_event(int b)
     case 11: finder_next_channel(); break;
     case 12: finder_prev_channel(); break;
     case 13: finder_start_learn(); break;
-    case 14: finder_clear_target(); break;
     default: break;
     }
 }
@@ -270,8 +289,9 @@ static void print_help(void)
     ESP_LOGI("cli", "  tz CST-8              manual POSIX time zone fallback");
     ESP_LOGI("cli", "  timemode auto|hostapd|standard   Time Value interpretation");
     ESP_LOGI("cli", "  timeclear             erase the persisted UTC/TSF anchor");
-    ESP_LOGI("cli", "  ui ap|detail|stas|rf|find  jump to a UI page (debug)");
-    ESP_LOGI("cli", "  rfdata                dump NRF scan peak/avg/last");
+    ESP_LOGI("cli", "  ui ap|detail|stas|rf|help|color|find  jump to a UI page (debug)");
+    ESP_LOGI("cli", "  rfdata                dump NRF scan peak/avg/age/hits");
+    ESP_LOGI("cli", "  theme                 cycle the 10 UI palettes");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
 }
@@ -378,13 +398,20 @@ static void handle_line(char *line)
     } else if (!strcmp(line, "rfdata")) {
         nrf_scan_ch_t sc[NRF_SCAN_CHANNELS];
         nrf_aux_scan_get(sc, NRF_SCAN_CHANNELS);
-        ESP_LOGI("cli", "rf ok=%d csn=%d+%d scan=%d cycles=%lu",
-                 nrf_aux_ok(), nrf_aux_csn(), nrf_aux_csn2(),
-                 nrf_aux_scan_active(),
+        char csn[16];
+        if (nrf_aux_ok2() && nrf_aux_csn2() >= 0)
+            snprintf(csn, sizeof(csn), "%d+%d", nrf_aux_csn(), nrf_aux_csn2());
+        else
+            snprintf(csn, sizeof(csn), "%d", nrf_aux_csn());
+        ESP_LOGI("cli", "rf ok=%d csn=%s scan=%d cycles=%lu",
+                 nrf_aux_ok(), csn, nrf_aux_scan_active(),
                  (unsigned long)nrf_aux_scan_cycles());
         for (int i = 0; i < NRF_SCAN_CHANNELS; i++) {
-            ESP_LOGI("cli", "ch %2d  peak %3u  avg %3u  last %3u",
-                     i + 1, sc[i].peak, sc[i].avg, sc[i].last);
+            ESP_LOGI("cli", "ch %2d  peak %3u  avg %3u  last %3u  age %3lus  hit %u/%u  streak %u/%u",
+                     i + 1, sc[i].peak, sc[i].avg, sc[i].last,
+                     (unsigned long)(sc[i].peak_age_ms / 1000),
+                     sc[i].hits, sc[i].sweeps,
+                     sc[i].streak, sc[i].max_streak);
         }
     } else if (!strncmp(line, "ui ", 3)) {
         const char *arg = line + 3;
@@ -398,11 +425,18 @@ static void handle_line(char *line)
         } else if (!strcmp(arg, "rf")) {
             nrf_aux_scan(true);
             s_ui.page = UI_PAGE_RF_SCAN;
+        } else if (!strcmp(arg, "help")) {
+            s_ui.page = UI_PAGE_RF_HELP;
+        } else if (!strcmp(arg, "color")) {
+            s_ui.page = UI_PAGE_COLOR_TEST;
         } else if (!strcmp(arg, "menu")) {
             s_ui.page = UI_PAGE_MENU;
         } else if (!strcmp(arg, "find")) {
             s_ui.page = UI_PAGE_FIND;
         }
+    } else if (!strcmp(line, "theme")) {
+        int t = st7735_next_theme();
+        ESP_LOGI("cli", "theme %d %s", t + 1, st7735_theme_name());
     } else if (!strcmp(line, "timeclear")) {
         wnm_clock_clear_anchor();
     } else if (!strncmp(line, "timemode ", 9)) {
