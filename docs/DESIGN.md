@@ -71,8 +71,11 @@ Every management/data frame contributes a candidate from the STA address:
 The 32-entry table tracks frames, last seen, RSSI, channel and BSSID.  Probe
 requests also store the SSID being sought, so an unassociated STA can still be
 classified by the network name it is probing for.  `list` prints the AP BSSID
-and the best-known SSID; `stas` groups the recent candidates by BSSID so an AP
-can be used as the starting point.  Learning
+and the best-known SSID; `stas` walks the BSS table (including hidden-SSID
+entries) and attaches the active candidates seen with each BSSID.  It prints
+the AP's advertised station count alongside `seen N`, so an AP that reports
+five stations but only exposes two data-frame MACs is visible as such.
+Learning
 scores candidates by `(rssi + 100) * 100 + min(frames, 99)`, so the strongest
 device wins with activity as a tie-breaker.  A candidate must be seen during
 the five-second window.  Short `>` / `<` move forward/backward through the
@@ -124,7 +127,9 @@ periodic flash churn.  After a sync, adverts from other APs that are older than
 the running clock are ignored, so a stale cached value cannot drag the display
 backwards; a `timeclear` serial command erases the anchor.
 
-There is no network connection and no telemetry.
+There is no network connection and no telemetry.  The sniffer is receive-only:
+it never starts a scan or transmits a probe request.  Any active probe mode
+must be an explicit, opt-in command; the default stays passive.
 
 ## UI and keys
 

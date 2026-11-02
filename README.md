@@ -130,7 +130,7 @@ learn                   开始 5 秒学习
 next                    选择下一个候选
 prev                    选择上一个候选
 list                    列出候选 STA，带 AP BSSID / SSID / probe SSID
-stas                    按 AP 分组列出 STA（从 AP 出发分类）
+stas                    按 AP 分组列出 STA（含隐藏 AP、AP 报告数、已见 MAC）
 lock                    锁定 / 解除锁定信道
 chan                    手动下一信道
 chprev                  手动上一信道
@@ -277,6 +277,8 @@ SSID 是任意字节串，现场可能同时存在 UTF-8 和 GBK 两种编码。
 - 国家码 `01` + 手动 1–13，避免 12/13 被默认禁用
 - 被动学习 BSSID/SSID，不调用 `esp_wifi_scan`，不发 probe request
 - 每个候选 STA 记录它 probe 的 SSID；`list` 显示 `AP` 和 `SSID`，`stas` 按 BSSID 分组
+- `stas` 从 BSS 表出发，隐藏 AP 也会列出：`AP <BSSID> SSID <hidden> AP 5 STA seen 2 <MAC...>`
+- 固件只收不发：不主动 scan、不发 probe request；需要主动探测时必须显式进入 probe 模式（当前默认完全被动）
 - 隐藏 SSID 的 Beacon 也会进 BSS 表并标记 `<hidden>`，按 BSSID 仍可分组；
   只有完全听不到 AP Beacon 时才显示 `AP BEACON NOT HEARD`
 - 5G-only AP/STA 这套 2.4G 硬件看不到；STA 的 probe request 仍可能带出它要找的 SSID

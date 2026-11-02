@@ -1089,75 +1089,128 @@ void finder_print_candidates(void)
 
 void finder_print_stas_by_ap(void)
 {
-    static dump_t list[CAND_TABLE_LEN]; /* console task stack is small */
-    int n = 0;
+    static bss_dump_t aps[BSS_TABLE_LEN];   /* console task stack is small */
+    static dump_t stas[CAND_TABLE_LEN];
+    static bool sta_used[CAND_TABLE_LEN];
+    int nap = 0, nsta = 0;
     uint32_t now = now_ms();
 
     xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+    for (int i = 0; i < BSS_TABLE_LEN; i++) {
+        bss_rec_t *b = &s_bss[i];
+        if (!b->used) continue;
+        memcpy(aps[nap].bssid, b->bssid, 6);
+        memcpy(aps[nap].ssid, b->ssid, sizeof(aps[nap].ssid));
+        aps[nap].ssid[FINDER_SSID_MAX - 1] = 0;
+        aps[nap].ssid_len = b->ssid_len;
+        aps[nap].ch = b->channel;
+        aps[nap].rssi = b->rssi;
+        aps[nap].last_ms = b->last_ms;
+        aps[nap].has_load = b->has_load;
+        aps[nap].load_sta = b->load_sta;
+        aps[nap].load_util = b->load_util;
+        aps[nap].load_aac = b->load_aac;
+        nap++;
+    }
     for (int i = 0; i < CAND_TABLE_LEN; i++) {
         cand_rec_t *c = &s_cand[i];
         if (!c->used || now - c->last_ms > ACTIVE_MS) continue;
-        dump_candidate(&list[n], c, now);
-        n++;
+        memcpy(stas[nsta].mac, c->mac, 6);
+        memcpy(stas[nsta].bssid, c->bssid, 6);
+        stas[nsta].last_ms = c->last_ms;
+        stas[nsta].frames = c->frames;
+        stas[nsta].rssi = c->rssi;
+        stas[nsta].ch = c->channel;
+        nsta++;
     }
     xSemaphoreGive(s_tab_lock);
 
-    for (int i = 0; i < n; i++) {
-        for (int j = i + 1; j < n; j++) {
-            int cmp = memcmp(list[i].bssid, list[j].bssid, 6);
-            bool swap = cmp > 0 ||
-                        (cmp == 0 && list[j].frames > list[i].frames);
+    int seen[BSS_TABLE_LEN];
+    int order[BSS_TABLE_LEN];
+    for (int i = 0; i < nap; i++) {
+        seen[i] = 0;
+        order[i] = i;
+        for (int j = 0; j < nsta; j++) {
+            if (memcmp(stas[j].bssid, aps[i].bssid, 6) == 0) seen[i]++;
+        }
+    }
+    /* APs with visible STAs first, then strongest RSSI. */
+    for (int i = 0; i < nap; i++) {
+        for (int j = i + 1; j < nap; j++) {
+            int ai = order[i], aj = order[j];
+            bool swap = false;
+            if ((seen[ai] > 0) != (seen[aj] > 0)) swap = seen[aj] > 0;
+            else if (seen[ai] != seen[aj]) swap = seen[aj] > seen[ai];
+            else swap = aps[aj].rssi > aps[ai].rssi;
             if (swap) {
-                dump_t t = list[i];
-                list[i] = list[j];
-                list[j] = t;
+                int t = order[i];
+                order[i] = order[j];
+                order[j] = t;
             }
         }
     }
 
-    ESP_LOGI(TAG, "%d active STA(s), grouped by AP", n);
-    int groups = 0;
-    for (int i = 0; i < n && groups < 12; ) {
-        int j = i + 1;
-        while (j < n && memcmp(list[i].bssid, list[j].bssid, 6) == 0) j++;
-
-        char ap[18];
-        mac_text(list[i].bssid, ap);
-        if (mac_zero(list[i].bssid)) snprintf(ap, sizeof(ap), "--");
-
-        const char *ssid = list[i].ap_ssid_len ? list[i].ap_ssid : NULL;
-        const char *probe = NULL;
-        if (!ssid) {
-            for (int k = i; k < j; k++) {
-                if (list[k].probe_ssid_len) {
-                    probe = list[k].probe_ssid;
-                    break;
-                }
-            }
-        }
-
+    memset(sta_used, 0, sizeof(sta_used));
+    ESP_LOGI(TAG, "%d known AP(s), %d active STA(s)", nap, nsta);
+    int shown_aps = nap < 12 ? nap : 12;
+    for (int oi = 0; oi < shown_aps; oi++) {
+        int bi = order[oi];
         char line[192];
-        int off = snprintf(line, sizeof(line), "AP %s  ", ap);
-        if (ssid) off += snprintf(line + off, sizeof(line) - off, "SSID %s", ssid);
-        else if (list[i].ap_hidden) off += snprintf(line + off, sizeof(line) - off, "SSID <hidden>");
-        else if (probe) off += snprintf(line + off, sizeof(line) - off, "SSID -- probe %s", probe);
-        else off += snprintf(line + off, sizeof(line) - off, "SSID --");
-        off += snprintf(line + off, sizeof(line) - off, "  ch %u  %d STA",
-                        list[i].ch, j - i);
+        int off = snprintf(line, sizeof(line), "AP %02X:%02X:%02X:%02X:%02X:%02X  ",
+                           aps[bi].bssid[0], aps[bi].bssid[1], aps[bi].bssid[2],
+                           aps[bi].bssid[3], aps[bi].bssid[4], aps[bi].bssid[5]);
+        if (aps[bi].ssid_len)
+            off += snprintf(line + off, sizeof(line) - off, "SSID %s", aps[bi].ssid);
+        else
+            off += snprintf(line + off, sizeof(line) - off, "SSID <hidden>");
+        off += snprintf(line + off, sizeof(line) - off, "  ch %u", aps[bi].ch);
+        if (aps[bi].has_load)
+            off += snprintf(line + off, sizeof(line) - off, "  AP %u STA", aps[bi].load_sta);
+        off += snprintf(line + off, sizeof(line) - off, "  seen %d", seen[bi]);
 
-        int shown = j - i > 4 ? 4 : j - i;
-        for (int k = i; k < i + shown && off < (int)sizeof(line) - 24; k++) {
-            char mac[18];
-            mac_text(list[k].mac, mac);
-            off += snprintf(line + off, sizeof(line) - off, "  %s(%d)",
-                            mac, list[k].rssi);
+        int shown = 0;
+        for (int j = 0; j < nsta; j++) {
+            if (memcmp(stas[j].bssid, aps[bi].bssid, 6) != 0) continue;
+            sta_used[j] = true;
+            if (shown < 4 && off < (int)sizeof(line) - 24) {
+                char mac[18];
+                mac_text(stas[j].mac, mac);
+                off += snprintf(line + off, sizeof(line) - off, "  %s(%d)",
+                                mac, stas[j].rssi);
+            }
+            shown++;
         }
-        if (j - i > shown) snprintf(line + off, sizeof(line) - off, " +%d", j - i - shown);
+        if (shown > 4) snprintf(line + off, sizeof(line) - off, " +%d", shown - 4);
         ESP_LOGI(TAG, "%s", line);
-        groups++;
-        i = j;
     }
-    ESP_LOGI(TAG, "use 'mac XX:..' to lock one STA");
+
+    /* Active STAs whose BSSID was not in the AP table (or was wildcard). */
+    int unknown = 0;
+    for (int j = 0; j < nsta; j++) {
+        if (sta_used[j]) continue;
+        int total = 0;
+        for (int k = j; k < nsta; k++) {
+            if (!sta_used[k] && memcmp(stas[k].bssid, stas[j].bssid, 6) == 0)
+                total++;
+        }
+        char line[192];
+        int off = snprintf(line, sizeof(line), "AP --  SSID --  ch %u  seen %d",
+                           stas[j].ch, total);
+        int shown = 0;
+        for (int k = j; k < nsta && shown < 4; k++) {
+            if (sta_used[k] || memcmp(stas[k].bssid, stas[j].bssid, 6) != 0) continue;
+            sta_used[k] = true;
+            char mac[18];
+            mac_text(stas[k].mac, mac);
+            off += snprintf(line + off, sizeof(line) - off, "  %s(%d)",
+                            mac, stas[k].rssi);
+            shown++;
+        }
+        if (total > shown) snprintf(line + off, sizeof(line) - off, " +%d", total - shown);
+        ESP_LOGI(TAG, "%s", line);
+        if (++unknown >= 6) break;
+    }
+    ESP_LOGI(TAG, "passive only: no probe/scan requests are sent");
 }
 
 bool finder_init(void)
