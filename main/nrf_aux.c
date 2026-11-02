@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nrf24.h"
@@ -20,6 +21,7 @@ static volatile uint8_t s_wifi_ch = 1;
 static bool s_bus_ready;
 static bool s_logged_found;
 static bool s_logged_lost;
+static uint32_t s_last_fail_ms;
 static const int s_csn[NRF_MODULE_COUNT] = NRF_CSN_PINS;
 static const int s_ce[NRF_MODULE_COUNT] = NRF_CE_PINS;
 
@@ -40,14 +42,19 @@ static bool open_radio(void)
         if (!nrf_bus_init()) return false;
         s_bus_ready = true;
     }
-    for (int i = 0; i < NRF_MODULE_COUNT; i++) {
-        if (nrf_init(&s_radio, s_csn[i], s_ce[i])) {
-            if (!s_logged_found) {
-                ESP_LOGI(TAG, "NRF24L01 on CSN %d", s_csn[i]);
-                s_logged_found = true;
+    /* NRF24L01+ modules are slow to settle after power-up.  Probe every
+     * CSN/CE pair several times with a short pause before giving up. */
+    for (int pass = 0; pass < 4; pass++) {
+        for (int i = 0; i < NRF_MODULE_COUNT; i++) {
+            if (nrf_init(&s_radio, s_csn[i], s_ce[i])) {
+                if (!s_logged_found) {
+                    ESP_LOGI(TAG, "NRF24L01 on CSN %d", s_csn[i]);
+                    s_logged_found = true;
+                }
+                return true;
             }
-            return true;
         }
+        vTaskDelay(pdMS_TO_TICKS(150));
     }
     return false;
 }
@@ -55,11 +62,16 @@ static bool open_radio(void)
 static void nrf_aux_task(void *arg)
 {
     (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(1200)); /* give the slow modules time to settle */
+    vTaskDelay(pdMS_TO_TICKS(2500)); /* give the slow modules time to settle */
 
     for (;;) {
         if (!s_ok) {
             if (!open_radio()) {
+                uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+                if ((uint32_t)(now - s_last_fail_ms) >= 30000) {
+                    s_last_fail_ms = now;
+                    ESP_LOGW(TAG, "NRF not found on CSN 17/18/21, retrying");
+                }
                 vTaskDelay(pdMS_TO_TICKS(3000));
                 continue;
             }

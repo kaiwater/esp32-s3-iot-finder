@@ -282,12 +282,12 @@ static void print_status(void)
                  s_view.bssid[0], s_view.bssid[1], s_view.bssid[2],
                  s_view.bssid[3], s_view.bssid[4], s_view.bssid[5]);
     }
-    ESP_LOGI("cli", "wifi=%d target=%s rssi=%d fps=%lu ch=%u mode=%d state=%d cand=%lu pkt=%lu drop=%lu nrf=%d/%u%% heap=%lu",
+    ESP_LOGI("cli", "wifi=%d target=%s rssi=%d fps=%lu ch=%u mode=%d state=%d cand=%lu pkt=%lu drop=%lu nrf=%d/%u%% csn=%d heap=%lu",
              s_view.wifi_ok, mac, s_view.have_rssi ? s_view.rssi : -100,
              (unsigned long)s_view.fps, s_view.channel, s_view.chan_mode,
              s_view.link, (unsigned long)s_view.cand_count,
              (unsigned long)s_view.packets, (unsigned long)s_view.drops,
-             s_view.nrf_ok, s_view.nrf_duty,
+             s_view.nrf_ok, s_view.nrf_duty, s_view.nrf_csn,
              (unsigned long)esp_get_free_heap_size());
     ESP_LOGI("cli", "vendor=%s bssid=%s ssid=%s peak=%d ap_load=%u%%/%u",
              s_view.vendor[0] ? s_view.vendor : "--", bssid,

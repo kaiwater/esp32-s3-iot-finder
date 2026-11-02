@@ -187,10 +187,14 @@ used for hot/cold decisions.
 
 ## NRF side channel
 
-One NRF24L01 is initialized opportunistically.  A task maps the current Wi-Fi
-channel to the NRF channel at the same centre frequency, samples RPD eight
-times, and publishes 0–100%.  The NRF runs independently and does not affect
-the Wi-Fi sniffer.  If no module is found, the UI shows `RF --`.
+One NRF24L01 is initialized opportunistically.  Startup waits 2.5 s, then
+probes every CSN/CE pair (17/38, 18/39, 21/40) four times with a 150 ms pause
+between passes, and each pair is read back four times.  Re-probing a different
+CSN removes and re-adds the SPI device, so the probe really tests that CSN.
+The task maps the current Wi-Fi channel to the NRF channel at the same centre
+frequency, samples RPD eight times, and publishes 0–100%.  The NRF runs
+independently and does not affect the Wi-Fi sniffer.  If no module is found,
+the UI shows `RF --`; when found, INFO shows `RF OK C<csn> <duty>%`.
 
 ## Service clock and WNM time
 

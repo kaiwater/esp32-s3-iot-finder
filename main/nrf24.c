@@ -111,6 +111,13 @@ bool nrf_bus_init(void)
 
 bool nrf_init(nrf_t *n, int csn_pin, int ce_pin)
 {
+    n->present = false;
+
+    /* Re-probing another CSN must not keep talking to the first device. */
+    if (n->spi && n->csn_pin != csn_pin) {
+        spi_bus_remove_device(n->spi);
+        n->spi = NULL;
+    }
     n->csn_pin = csn_pin;
     n->ce_pin = ce_pin;
     if (n->spi == NULL) {
@@ -134,10 +141,20 @@ bool nrf_init(nrf_t *n, int csn_pin, int ce_pin)
     ESP_ERROR_CHECK(gpio_set_level(ce_pin, 0));
 
     /* A missing module reads 0x00 or 0xFF.  Write two registers and read
-     * them back before trusting the link. */
-    nrf_write_reg(n, REG_CONFIG, 0x0E);   /* EN_CRC, CRCO=2, PWR_UP */
-    nrf_write_reg(n, REG_RF_CH, 0x4B);    /* temporary test value */
-    if (nrf_read_reg(n, REG_CONFIG) != 0x0E || nrf_read_reg(n, REG_RF_CH) != 0x4B) {
+     * them back.  The module can need a few ms after power-up, so retry. */
+    bool ok = false;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        nrf_write_reg(n, REG_CONFIG, 0x0E);   /* EN_CRC, CRCO=2, PWR_UP */
+        nrf_write_reg(n, REG_RF_CH, 0x4B);    /* temporary test value */
+        vTaskDelay(pdMS_TO_TICKS(10));
+        if (nrf_read_reg(n, REG_CONFIG) == 0x0E &&
+            nrf_read_reg(n, REG_RF_CH) == 0x4B) {
+            ok = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (!ok) {
         ESP_LOGW(TAG, "no NRF24L01 on CSN %d", csn_pin);
         return false;
     }

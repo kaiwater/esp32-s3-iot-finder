@@ -46,6 +46,8 @@
 - 屏幕：ST7735 **160x128**，SPI2
 - NRF：SPI3，只使用 RPD 位，**不参与 MAC 识别**
 - NRF 是可选的；没有 NRF 时界面显示 `RF --`，Wi-Fi 定位照常工作
+- NRF 启动会延迟 2.5 秒，并对 17/38、18/39、21/40 多轮重试；
+  识别成功后 INFO 页显示 `RF OK C<CSN> <duty>%`，串口 `status` 显示 `csn=...`
 
 > 只支持 2.4GHz。5.8GHz 图传、5GHz Wi-Fi、大多数 FPV 模拟/数字图传这套硬件看不到。
 
@@ -299,6 +301,8 @@ SSID 是任意字节串，现场可能同时存在 UTF-8 和 GBK 两种编码。
 - UI 状态机：FINDER / MENU / INFO / SSID；菜单承载学习、清除、峰值、信道、SSID、重启
 - OUI 厂商表由 `tools/gen-oui.py` 从 IEEE 公开 OUI 列表生成
 - NRF 只读 `RPD`，跟随当前 Wi-Fi 频道中心，8 次采样得到 0–100%
+- NRF 探测会重新挂载对应 CSN 的 SPI 设备；旧代码只探测第一组 CSN，现已修正
+- 串口日志 `NRF24L01 on CSN xx` 只出现在 UART；屏幕上看 INFO 页的 `RF OK Cxx`
 
 ### 目录
 
