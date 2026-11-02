@@ -953,17 +953,17 @@ static void draw_rf_scan_page(const ui_state_t *ui)
 static void draw_rf_help_page(void)
 {
     clear_panel();
-    cjk_line(2, 2, "RF 扫描说明", COL_ACCENT);
+    cjk_line(2, 2, "RF 图表说明", COL_ACCENT);
     rect(0, 15, WIDTH, 1, COL_DARK);
 
-    cjk_line(2, 18, "1. 柱=信道1-13", COL_TEXT);
+    cjk_line(2, 18, "1. 13柱=信道1-13", COL_TEXT);
     cjk_line(2, 31, "2. 外柱=峰值保持", COL_TEXT);
     cjk_line(2, 44, "3. 内柱=平均值", COL_TEXT);
-    cjk_line(2, 57, "4. 短按#=本说明", COL_TEXT);
-    cjk_line(2, 70, "5. 长按#=清空峰值", COL_TEXT);
-    cjk_line(2, 83, "6. * = 返回", COL_TEXT);
-    cjk_line(2, 96, "7. 长按*=换主题", COL_TEXT);
-    text3x5(2, 108, "PK=PEAK AGE=SEC HIT=CNT", 1, COL_DIM);
+    cjk_line(2, 57, "4. 空柱=无能量", COL_TEXT);
+    cjk_line(2, 70, "5. PK峰值 AGE多久前", COL_TEXT);
+    cjk_line(2, 83, "6. HIT>=25%轮数", COL_TEXT);
+    cjk_line(2, 96, "7. 红<80 橙>=80", COL_TEXT);
+
     text3x5(2, 119, "* BACK", 1, COL_ACCENT);
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
