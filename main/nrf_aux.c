@@ -17,7 +17,9 @@
 
 static const char *TAG = "nrf_aux";
 static nrf_t s_radio;
+static nrf_t s_radio2;
 static volatile bool s_ok;
+static volatile bool s_ok2;
 static volatile uint8_t s_duty;
 static volatile uint8_t s_wifi_ch = 1;
 static bool s_bus_ready;
@@ -48,21 +50,54 @@ static bool open_radio(void)
         if (!nrf_bus_init()) return false;
         s_bus_ready = true;
     }
-    /* NRF24L01+ modules are slow to settle after power-up.  Probe every
-     * CSN/CE pair several times with a short pause before giving up. */
-    for (int pass = 0; pass < 6; pass++) {
-        for (int i = 0; i < NRF_MODULE_COUNT; i++) {
-            if (nrf_init(&s_radio, s_csn[i], s_ce[i])) {
-                if (!s_logged_found) {
-                    ESP_LOGI(TAG, "NRF24L01 on CSN %d", s_csn[i]);
-                    s_logged_found = true;
-                }
-                return true;
+
+    /* Probe each CSN/CE pair as an independent SPI device.  Keeping a
+     * separate nrf_t per pair is what allows both modules to come online;
+     * the old single-radio path stopped at the first one. */
+    static nrf_t cand[NRF_MODULE_COUNT];
+    nrf_t found[2];
+    int nfound = 0;
+    s_ok2 = false;
+
+    for (int i = 0; i < NRF_MODULE_COUNT && nfound < 2; i++) {
+        for (int attempt = 0; attempt < 4; attempt++) {
+            if (nrf_init(&cand[i], s_csn[i], s_ce[i])) {
+                found[nfound++] = cand[i];
+                break;
             }
+            vTaskDelay(pdMS_TO_TICKS(200));
         }
-        vTaskDelay(pdMS_TO_TICKS(200));
     }
-    return false;
+
+    if (!nfound) return false;
+
+    s_radio = found[0];
+    s_ok = true;
+    if (nfound > 1) {
+        s_radio2 = found[1];
+        s_ok2 = true;
+    }
+
+    if (!s_logged_found) {
+        if (s_ok2) {
+            ESP_LOGI(TAG, "NRF24L01 CSN %d + %d",
+                     s_radio.csn_pin, s_radio2.csn_pin);
+        } else {
+            ESP_LOGI(TAG, "NRF24L01 CSN %d (single)", s_radio.csn_pin);
+        }
+        s_logged_found = true;
+    }
+    return true;
+}
+
+static void scan_store(int ch, uint8_t pct)
+{
+    portENTER_CRITICAL(&s_scan_mux);
+    nrf_scan_ch_t *sc = &s_scan_data[ch - 1];
+    sc->last = pct;
+    if (pct > sc->peak) sc->peak = pct;
+    sc->avg = (uint8_t)((sc->avg * 3u + pct) / 4u);
+    portEXIT_CRITICAL(&s_scan_mux);
 }
 
 static void nrf_aux_task(void *arg)
@@ -85,26 +120,51 @@ static void nrf_aux_task(void *arg)
         }
 
         if (s_scan) {
-            for (int ch = 1; ch <= NRF_SCAN_CHANNELS && s_scan; ch++) {
-                nrf_set_channel(&s_radio, wifi_to_rf((uint8_t)ch));
-                vTaskDelay(pdMS_TO_TICKS(5));
-                /* RPD is only valid with CE high in RX mode; the old scan
-                 * sampled it in standby and every channel looked full. */
-                nrf_rx_mode(&s_radio);
-                vTaskDelay(pdMS_TO_TICKS(2));
-                unsigned high = 0;
-                for (int i = 0; i < 16; i++) {
-                    if (nrf_read_reg(&s_radio, REG_RPD) & 1u) high++;
-                    esp_rom_delay_us(500);
+            if (s_ok && s_ok2) {
+                /* Two radios scan two channels per pass: 1..6 with 8..13;
+                 * channel 7 is handled by radio 1 alone. */
+                for (int ch = 1; ch <= 7 && s_scan; ch++) {
+                    int ch2 = ch + 7;
+                    bool use2 = ch2 <= NRF_SCAN_CHANNELS;
+                    uint8_t rf1 = wifi_to_rf((uint8_t)ch);
+                    uint8_t rf2 = use2 ? wifi_to_rf((uint8_t)ch2) : 0;
+                    nrf_set_channel(&s_radio, rf1);
+                    if (use2) nrf_set_channel(&s_radio2, rf2);
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                    if (use2 &&
+                        nrf_read_reg(&s_radio2, REG_RF_CH) != rf2) {
+                        s_ok2 = false;
+                        use2 = false;
+                    }
+                    nrf_rx_mode(&s_radio);
+                    if (use2) nrf_rx_mode(&s_radio2);
+                    vTaskDelay(pdMS_TO_TICKS(2));
+                    unsigned h1 = 0, h2 = 0;
+                    for (int i = 0; i < 16; i++) {
+                        if (nrf_read_reg(&s_radio, REG_RPD) & 1u) h1++;
+                        if (use2 && (nrf_read_reg(&s_radio2, REG_RPD) & 1u)) h2++;
+                        esp_rom_delay_us(500);
+                    }
+                    nrf_standby(&s_radio);
+                    if (use2) nrf_standby(&s_radio2);
+                    scan_store(ch, (uint8_t)(h1 * 100u / 16u));
+                    if (use2) scan_store(ch2, (uint8_t)(h2 * 100u / 16u));
                 }
-                nrf_standby(&s_radio);
-                uint8_t pct = (uint8_t)(high * 100u / 16u);
-                portENTER_CRITICAL(&s_scan_mux);
-                nrf_scan_ch_t *sc = &s_scan_data[ch - 1];
-                sc->last = pct;
-                if (pct > sc->peak) sc->peak = pct;
-                sc->avg = (uint8_t)((sc->avg * 3u + pct) / 4u);
-                portEXIT_CRITICAL(&s_scan_mux);
+            } else {
+                for (int ch = 1; ch <= NRF_SCAN_CHANNELS && s_scan; ch++) {
+                    nrf_set_channel(&s_radio, wifi_to_rf((uint8_t)ch));
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                    /* RPD is only valid with CE high in RX mode. */
+                    nrf_rx_mode(&s_radio);
+                    vTaskDelay(pdMS_TO_TICKS(2));
+                    unsigned high = 0;
+                    for (int i = 0; i < 16; i++) {
+                        if (nrf_read_reg(&s_radio, REG_RPD) & 1u) high++;
+                        esp_rom_delay_us(500);
+                    }
+                    nrf_standby(&s_radio);
+                    scan_store(ch, (uint8_t)(high * 100u / 16u));
+                }
             }
             s_scan_cycles++;
             s_duty = 0;
@@ -165,6 +225,16 @@ void nrf_aux_set_channel(uint8_t wifi_channel)
 int nrf_aux_csn(void)
 {
     return s_ok ? s_radio.csn_pin : -1;
+}
+
+int nrf_aux_csn2(void)
+{
+    return s_ok2 ? s_radio2.csn_pin : -1;
+}
+
+bool nrf_aux_ok2(void)
+{
+    return s_ok2;
 }
 
 bool nrf_aux_ok(void)

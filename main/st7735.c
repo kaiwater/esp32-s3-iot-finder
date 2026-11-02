@@ -765,8 +765,11 @@ static void draw_rf_scan_page(const ui_state_t *ui)
     clear_panel();
     text3x5(2, 2, "RF SCAN", 2, COL_ACCENT);
     if (nrf_aux_ok()) {
-        snprintf(buf, sizeof(buf), "C%d", nrf_aux_csn());
-        text3x5(126, 3, buf, 1, COL_ACCENT);
+        if (nrf_aux_ok2() && nrf_aux_csn2() >= 0)
+            snprintf(buf, sizeof(buf), "C%d+C%d", nrf_aux_csn(), nrf_aux_csn2());
+        else
+            snprintf(buf, sizeof(buf), "C%d", nrf_aux_csn());
+        text3x5(108, 3, buf, 1, COL_ACCENT);
     } else {
         text3x5(118, 3, "NRF --", 1, COL_DIM);
     }
@@ -1017,14 +1020,19 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
     text3x5(2, 59, buf, 1, COL_TEXT);
 
     if (v->nrf_ok && v->nrf_csn >= 0) {
+        char csn[16];
+        if (v->nrf_ok2 && v->nrf_csn2 >= 0)
+            snprintf(csn, sizeof(csn), "C%d+C%d", v->nrf_csn, v->nrf_csn2);
+        else
+            snprintf(csn, sizeof(csn), "C%d", v->nrf_csn);
         if (v->have_ap_load) {
             unsigned ap_pct = (v->ap_load * 100u + 127u) / 255u;
-            snprintf(buf, sizeof(buf), "LINK %s RF OK C%d %u%% AP %u%%/%u",
-                     link_name(v->link), v->nrf_csn, v->nrf_duty,
+            snprintf(buf, sizeof(buf), "LINK %s RF %s %u%% AP %u%%/%u",
+                     link_name(v->link), csn, v->nrf_duty,
                      ap_pct, v->ap_sta_count);
         } else {
-            snprintf(buf, sizeof(buf), "LINK %s RF OK C%d %u%%",
-                     link_name(v->link), v->nrf_csn, v->nrf_duty);
+            snprintf(buf, sizeof(buf), "LINK %s RF %s %u%%",
+                     link_name(v->link), csn, v->nrf_duty);
         }
     } else if (v->have_ap_load) {
         unsigned ap_pct = (v->ap_load * 100u + 127u) / 255u;

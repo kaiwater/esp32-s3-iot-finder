@@ -310,12 +310,17 @@ static void print_status(void)
                  s_view.bssid[0], s_view.bssid[1], s_view.bssid[2],
                  s_view.bssid[3], s_view.bssid[4], s_view.bssid[5]);
     }
-    ESP_LOGI("cli", "wifi=%d target=%s rssi=%d fps=%lu ch=%u mode=%d state=%d cand=%lu pkt=%lu drop=%lu nrf=%d/%u%% csn=%d heap=%lu",
+    char csn[24] = "-";
+    if (s_view.nrf_ok && s_view.nrf_ok2)
+        snprintf(csn, sizeof(csn), "%d+%d", s_view.nrf_csn, s_view.nrf_csn2);
+    else if (s_view.nrf_ok)
+        snprintf(csn, sizeof(csn), "%d", s_view.nrf_csn);
+    ESP_LOGI("cli", "wifi=%d target=%s rssi=%d fps=%lu ch=%u mode=%d state=%d cand=%lu pkt=%lu drop=%lu nrf=%d/%u%% csn=%s heap=%lu",
              s_view.wifi_ok, mac, s_view.have_rssi ? s_view.rssi : -100,
              (unsigned long)s_view.fps, s_view.channel, s_view.chan_mode,
              s_view.link, (unsigned long)s_view.cand_count,
              (unsigned long)s_view.packets, (unsigned long)s_view.drops,
-             s_view.nrf_ok, s_view.nrf_duty, s_view.nrf_csn,
+             s_view.nrf_ok, s_view.nrf_duty, csn,
              (unsigned long)esp_get_free_heap_size());
     ESP_LOGI("cli", "vendor=%s bssid=%s ssid=%s peak=%d ap_load=%u%%/%u",
              s_view.vendor[0] ? s_view.vendor : "--", bssid,
@@ -373,8 +378,9 @@ static void handle_line(char *line)
     } else if (!strcmp(line, "rfdata")) {
         nrf_scan_ch_t sc[NRF_SCAN_CHANNELS];
         nrf_aux_scan_get(sc, NRF_SCAN_CHANNELS);
-        ESP_LOGI("cli", "rf ok=%d csn=%d scan=%d cycles=%lu",
-                 nrf_aux_ok(), nrf_aux_csn(), nrf_aux_scan_active(),
+        ESP_LOGI("cli", "rf ok=%d csn=%d+%d scan=%d cycles=%lu",
+                 nrf_aux_ok(), nrf_aux_csn(), nrf_aux_csn2(),
+                 nrf_aux_scan_active(),
                  (unsigned long)nrf_aux_scan_cycles());
         for (int i = 0; i < NRF_SCAN_CHANNELS; i++) {
             ESP_LOGI("cli", "ch %2d  peak %3u  avg %3u  last %3u",
@@ -492,7 +498,9 @@ void app_main(void)
             last_nrf = now;
             nrf_aux_set_channel(s_view.channel);
             s_view.nrf_ok = nrf_aux_ok();
+            s_view.nrf_ok2 = nrf_aux_ok2();
             s_view.nrf_csn = (int8_t)nrf_aux_csn();
+            s_view.nrf_csn2 = (int8_t)nrf_aux_csn2();
             s_view.nrf_duty = nrf_aux_duty();
         }
         if (now - last_draw >= 100) {

@@ -8,7 +8,9 @@
 void nrf_aux_start(void);
 void nrf_aux_set_channel(uint8_t wifi_channel);
 bool nrf_aux_ok(void);
+bool nrf_aux_ok2(void);
 int nrf_aux_csn(void);
+int nrf_aux_csn2(void);
 uint8_t nrf_aux_duty(void);
 
 #define NRF_SCAN_CHANNELS 13

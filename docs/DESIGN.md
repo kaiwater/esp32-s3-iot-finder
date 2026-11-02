@@ -187,10 +187,12 @@ used for hot/cold decisions.
 
 ## NRF side channel
 
-One NRF24L01 is initialized opportunistically.  Startup waits 3 s, then
-probes every CSN/CE pair (17/38, 18/39, 21/40) six times with a 200 ms pause
-between passes, and each pair is read back six times after a PWR_UP toggle.
-The SPI clock is 1MHz to tolerate long jumper wires.  Re-probing a different
+Up to two NRF24L01 modules are initialized opportunistically.  Each CSN/CE
+pair gets its own `nrf_t` and SPI device, so probing CSN 18 does not keep
+talking to the device created for CSN 17.  Startup waits 3 s, then probes every
+pair (17/38, 18/39, 21/40) several times, and each pair is read back after a
+PWR_UP toggle.  The SPI clock is 1MHz to tolerate long jumper wires.  When two
+modules are present, INFO/status reports both CSNs.  Re-probing a different
 CSN removes and re-adds the SPI device, so the probe really tests that CSN.
 The task maps the current Wi-Fi channel to the NRF channel at the same centre
 frequency, samples RPD eight times, and publishes 0–100%.  The NRF runs
@@ -198,8 +200,9 @@ independently and does not affect the Wi-Fi sniffer.  If no module is found,
 the UI shows `RF --`; when found, INFO shows `RF OK C<csn> <duty>%`.
 
 The RF SCAN page temporarily takes the NRF off the Wi-Fi channel and sweeps
-1..13.  Each channel gets 16 RPD samples (8 ms), and the peak is retained
-across sweeps until reset.  The screen draws the peak as the outer bar and the
+1..13.  With two modules it scans 1..6 and 8..13 in parallel and channel 7 with
+the first radio; with one module it walks all 13.  Each channel gets 16 RPD
+samples (8 ms), and the peak is retained across sweeps until reset.  The screen draws the peak as the outer bar and the
 smoothed average as the inner bar, which is the useful view for a frequency
 hopper: a single visit to a channel leaves a visible peak.
 

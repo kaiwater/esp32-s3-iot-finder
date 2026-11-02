@@ -96,7 +96,9 @@ typedef struct {
     uint32_t best_frames;
 
     bool nrf_ok;
+    bool nrf_ok2;
     int8_t nrf_csn;
+    int8_t nrf_csn2;
     uint8_t nrf_duty;
 
     char toast[FINDER_TOAST_MAX];
