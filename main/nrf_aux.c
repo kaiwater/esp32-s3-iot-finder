@@ -88,11 +88,16 @@ static void nrf_aux_task(void *arg)
             for (int ch = 1; ch <= NRF_SCAN_CHANNELS && s_scan; ch++) {
                 nrf_set_channel(&s_radio, wifi_to_rf((uint8_t)ch));
                 vTaskDelay(pdMS_TO_TICKS(5));
+                /* RPD is only valid with CE high in RX mode; the old scan
+                 * sampled it in standby and every channel looked full. */
+                nrf_rx_mode(&s_radio);
+                vTaskDelay(pdMS_TO_TICKS(2));
                 unsigned high = 0;
                 for (int i = 0; i < 16; i++) {
                     if (nrf_read_reg(&s_radio, REG_RPD) & 1u) high++;
                     esp_rom_delay_us(500);
                 }
+                nrf_standby(&s_radio);
                 uint8_t pct = (uint8_t)(high * 100u / 16u);
                 portENTER_CRITICAL(&s_scan_mux);
                 nrf_scan_ch_t *sc = &s_scan_data[ch - 1];

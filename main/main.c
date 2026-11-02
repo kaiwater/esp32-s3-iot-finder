@@ -271,6 +271,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  timemode auto|hostapd|standard   Time Value interpretation");
     ESP_LOGI("cli", "  timeclear             erase the persisted UTC/TSF anchor");
     ESP_LOGI("cli", "  ui ap|detail|stas|rf|find  jump to a UI page (debug)");
+    ESP_LOGI("cli", "  rfdata                dump NRF scan peak/avg/last");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
 }
@@ -369,6 +370,16 @@ static void handle_line(char *line)
     } else if (!strncmp(line, "tz ", 3)) {
         const char *arg = line + 3;
         wnm_clock_set_tz((const uint8_t *)arg, (uint8_t)strlen(arg), NULL);
+    } else if (!strcmp(line, "rfdata")) {
+        nrf_scan_ch_t sc[NRF_SCAN_CHANNELS];
+        nrf_aux_scan_get(sc, NRF_SCAN_CHANNELS);
+        ESP_LOGI("cli", "rf ok=%d csn=%d scan=%d cycles=%lu",
+                 nrf_aux_ok(), nrf_aux_csn(), nrf_aux_scan_active(),
+                 (unsigned long)nrf_aux_scan_cycles());
+        for (int i = 0; i < NRF_SCAN_CHANNELS; i++) {
+            ESP_LOGI("cli", "ch %2d  peak %3u  avg %3u  last %3u",
+                     i + 1, sc[i].peak, sc[i].avg, sc[i].last);
+        }
     } else if (!strncmp(line, "ui ", 3)) {
         const char *arg = line + 3;
         if (strcmp(arg, "rf") != 0) nrf_aux_scan(false);
