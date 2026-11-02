@@ -211,7 +211,7 @@ option time_zone 'CST-8'
 
 如果愿意在 AP 侧修一下，`docs/hostapd-time-refresh.patch` 让 hostapd 在每次发
 Beacon/Probe Response 时重新生成 Time Advertisement，而不是只生成一次。补丁
-针对 hostapd 2.11，改完后重启 hostapd/Wi-Fi 即可。它修正的是 OpenWrt 的
+针对 hostapd 2.11/2.12，改完后重启 hostapd/Wi-Fi 即可。它修正的是 OpenWrt 的
 "direct UTC" 行为，不改变 802.11 帧格式。
 
 ## 实现要点

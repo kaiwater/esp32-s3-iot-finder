@@ -131,8 +131,8 @@ time, otherwise it falls back to `UP HH:MM` uptime.
 - 67 is **not** the time element; it is BSS AVB Admission Capacity.  The `wnm`
   serial command prints counters for 67/69/98 for diagnostics.
 - `docs/hostapd-time-refresh.patch` is an optional AP-side workaround that makes
-  hostapd rebuild the Time Advertisement on every beacon instead of caching the
-  first one.
+  hostapd 2.11/2.12 rebuild the Time Advertisement on every beacon instead of
+  caching the first one.
 
 The header and the secondary PEAK/FPS/CAND counters use a dedicated 2x5
 numeric font, so they fit without competing with the RSSI display.
