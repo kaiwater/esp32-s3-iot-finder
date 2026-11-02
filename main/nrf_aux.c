@@ -101,6 +101,9 @@ static void nrf_aux_task(void *arg)
 
 void nrf_aux_start(void)
 {
+    /* The driver logs one warning per probed CSN when no module is fitted.
+     * The UI already shows RF --, so keep the serial log quiet. */
+    esp_log_level_set("nrf24", ESP_LOG_ERROR);
     xTaskCreatePinnedToCore(nrf_aux_task, "nrf_aux", 4096, NULL, 3, NULL, 1);
 }
 
