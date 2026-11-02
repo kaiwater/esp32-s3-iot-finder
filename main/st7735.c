@@ -633,7 +633,7 @@ static void draw_finder_page(const finder_view_t *v, const wnm_clock_view_t *c)
     } else if (!v->have_target) {
         text3x5(2, 114, "> NEXT < PREV  # LEARN  * MENU", 1, COL_DIM);
     } else {
-        text3x5(2, 114, "> NEXT < PREV  # LOCK  * MENU", 1, COL_DIM);
+        text3x5(2, 114, "> NEXT < PREV  # LOCK/HOP  * MENU", 1, COL_DIM);
     }
 
     if (v->learning) {
@@ -839,6 +839,8 @@ void st7735_init(void)
 int st7735_button(void)
 {
     static uint8_t stable;
+    static uint8_t last_raw;
+    static uint8_t stable_cnt;
     static uint32_t last;
     static uint32_t down_at[4];
     static bool was_down[4];
@@ -853,6 +855,13 @@ int st7735_button(void)
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     if (now - last < 20) return 0;
     last = now;
+    if (raw == last_raw) {
+        if (stable_cnt < 4) stable_cnt++;
+    } else {
+        last_raw = raw;
+        stable_cnt = 0;
+    }
+    if (stable_cnt < 2) return 0;
     stable = raw;
 
     for (int i = 0; i < 4; i++) {

@@ -112,7 +112,6 @@ static uint8_t s_cur_ch = CH_MIN;
 static uint8_t s_hop_ch = CH_MIN;
 static uint8_t s_manual_ch = CH_MIN;
 static uint8_t s_target_ch;
-static bool s_auto_lock = true;
 static finder_chan_mode_t s_mode = FINDER_CH_AUTO;
 static uint32_t s_last_hop_ms;
 
@@ -620,16 +619,6 @@ static void channel_logic(finder_view_t *v, uint32_t now)
 {
     if (!s_wifi_ok) return;
 
-    if (s_target_set && s_mode == FINDER_CH_AUTO && s_auto_lock) {
-        uint32_t last = s_t_last_ms;
-        uint8_t ch = s_t_channel;
-        if (last && now - last < 1000 && ch >= CH_MIN && ch <= CH_MAX) {
-            s_target_ch = ch;
-            s_mode = FINDER_CH_LOCKED;
-            set_channel(ch);
-        }
-    }
-
     switch (s_mode) {
     case FINDER_CH_LOCKED:
         if (s_target_ch >= CH_MIN && s_target_ch <= CH_MAX) set_channel(s_target_ch);
@@ -699,7 +688,8 @@ void finder_toast(const char *fmt, ...)
     portEXIT_CRITICAL(&s_toast_mux);
 }
 
-bool finder_set_target(const uint8_t mac[6], const char *why)
+static bool set_target_internal(const uint8_t mac[6], const char *why,
+                                bool persist)
 {
     if (!mac_valid(mac)) {
         finder_toast("INVALID MAC");
@@ -715,18 +705,23 @@ bool finder_set_target(const uint8_t mac[6], const char *why)
     reset_target_stats();
 
     s_mode = FINDER_CH_AUTO;
-    s_auto_lock = true;
     s_target_ch = 0;
     s_learn_until = 0;
 
-    if (changed) nvs_save_target(mac);
+    if (persist && changed) nvs_save_target(mac);
     xSemaphoreGive(s_api_lock);
 
     char text[18];
     mac_text(mac, text);
-    ESP_LOGI(TAG, "target set %s (%s)", text, why ? why : "manual");
+    ESP_LOGI(TAG, "target set %s (%s%s)", text, why ? why : "manual",
+             persist ? "" : ", volatile");
     finder_toast("TARGET SET");
     return true;
+}
+
+bool finder_set_target(const uint8_t mac[6], const char *why)
+{
+    return set_target_internal(mac, why, true);
 }
 
 bool finder_set_target_str(const char *text)
@@ -763,7 +758,6 @@ void finder_clear_target(void)
     memset(s_target, 0, 6);
     reset_target_stats();
     s_mode = FINDER_CH_AUTO;
-    s_auto_lock = true;
     s_target_ch = 0;
     s_learn_until = 0;
     nvs_clear_target();
@@ -783,7 +777,6 @@ void finder_start_learn(void)
     xSemaphoreTake(s_api_lock, portMAX_DELAY);
     s_learn_until = now_ms() + LEARN_MS;
     s_mode = FINDER_CH_AUTO;
-    s_auto_lock = false;
     s_last_hop_ms = 0;
     xSemaphoreGive(s_api_lock);
 
@@ -807,22 +800,26 @@ void finder_toggle_lock(void)
         return;
     }
 
-    if (s_mode == FINDER_CH_AUTO) {
-        uint8_t ch = s_t_channel;
-        if (ch < CH_MIN || ch > CH_MAX) ch = s_cur_ch;
+    if (s_mode != FINDER_CH_LOCKED) {
+        uint8_t ch = s_target_ch;
+        if (ch < CH_MIN || ch > CH_MAX) ch = s_t_channel;
+        if (ch < CH_MIN || ch > CH_MAX) {
+            xSemaphoreGive(s_api_lock);
+            finder_toast("TARGET CH UNKNOWN");
+            return;
+        }
         s_target_ch = ch;
         s_manual_ch = ch;
         s_mode = FINDER_CH_LOCKED;
-        s_auto_lock = false;
+        nvs_save_target(s_target);
         set_channel(ch);
         xSemaphoreGive(s_api_lock);
         finder_toast("LOCK CH %u", ch);
     } else {
         s_mode = FINDER_CH_AUTO;
-        s_auto_lock = false;
         s_last_hop_ms = 0;
         xSemaphoreGive(s_api_lock);
-        finder_toast("CHANNEL HOP");
+        finder_toast("CRUISE");
     }
 }
 
@@ -835,7 +832,6 @@ static void step_channel(int dir)
     s_manual_ch = (uint8_t)ch;
     s_target_ch = s_manual_ch;
     s_mode = FINDER_CH_MANUAL;
-    s_auto_lock = false;
     set_channel(s_manual_ch);
     xSemaphoreGive(s_api_lock);
     finder_toast("MANUAL CH %u", s_manual_ch);
@@ -863,17 +859,11 @@ void finder_clear_peak(void)
     finder_toast("PEAK CLEARED");
 }
 
-static void target_lock_channel(uint8_t ch)
+static void target_note_channel(uint8_t ch)
 {
     if (ch < CH_MIN || ch > CH_MAX) return;
     xSemaphoreTake(s_api_lock, portMAX_DELAY);
-    if (s_target_set) {
-        s_target_ch = ch;
-        s_manual_ch = ch;
-        s_mode = FINDER_CH_LOCKED;
-        s_auto_lock = true;
-        set_channel(ch);
-    }
+    if (s_target_set) s_target_ch = ch;
     xSemaphoreGive(s_api_lock);
 }
 
@@ -920,8 +910,9 @@ static void step_candidate(int dir)
         }
     }
 
-    finder_set_target(list[next].mac, dir > 0 ? "next candidate" : "prev candidate");
-    target_lock_channel(list[next].ch);
+    set_target_internal(list[next].mac,
+                        dir > 0 ? "next candidate" : "prev candidate", false);
+    target_note_channel(list[next].ch);
 }
 
 void finder_next_candidate(void)
@@ -1492,8 +1483,8 @@ void finder_poll(finder_view_t *v)
 
         s_learn_until = 0;
         if (found) {
-            finder_set_target(chosen, "learned");
-            target_lock_channel(chosen_ch);
+            set_target_internal(chosen, "learned", false);
+            target_note_channel(chosen_ch);
         } else {
             ESP_LOGW(TAG, "learning finished with no candidate");
             finder_toast("NO CANDIDATE");

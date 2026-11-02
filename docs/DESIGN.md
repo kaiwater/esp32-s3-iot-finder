@@ -56,9 +56,12 @@ Modes:
 | `LOCKED` | stay on `target_ch` |
 | `MANUAL` | stay on the channel selected with long `>` / `<` |
 
-On a fresh target the firmware starts in `AUTO` with auto-lock enabled.  When a
-matching frame is heard, the channel is recorded and the mode switches to
-`LOCKED`.  A short `#` unlock disables auto-lock so the UI can actually hop.
+Targets are always collected in `AUTO` cruise mode.  Selecting a candidate
+records the target and its last channel but does not stop the hop.  A short
+`#` explicitly switches to `LOCKED` on the target's last-seen channel; another
+short `#` returns to `AUTO` and continues collecting.  This keeps the candidate
+table populated from all 13 channels instead of pinning it to the first STA
+that happens to appear.
 
 ## Candidate learning
 

@@ -18,6 +18,7 @@ static volatile int s_button_event;
 static finder_view_t s_view;
 static wnm_clock_view_t s_clock;
 static ui_state_t s_ui;
+static uint32_t s_btn_ready_ms;
 
 static void button_task(void *arg)
 {
@@ -319,16 +320,17 @@ void app_main(void)
 
     uint32_t last_draw = 0;
     uint32_t last_nrf = 0;
+    s_btn_ready_ms = (uint32_t)(esp_timer_get_time() / 1000) + 1500;
 
     ESP_LOGI(TAG, "ready");
     for (;;) {
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
         int b = s_button_event;
         s_button_event = 0;
-        if (b) handle_event(b);
+        if (b && (int32_t)(now - s_btn_ready_ms) >= 0) handle_event(b);
 
         finder_poll(&s_view);
 
-        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
         if (now - last_nrf >= 100) {
             last_nrf = now;
             nrf_aux_set_channel(s_view.channel);
