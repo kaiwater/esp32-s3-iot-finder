@@ -108,8 +108,9 @@ the Wi-Fi sniffer.  If no module is found, the UI shows `RF --`.
 
 There is no RTC or network time source.  The header shows `UP HH:MM` and the
 INFO page shows `UP HH:MM:SS`, both derived from `esp_timer_get_time()`.  The
-clock uses a dedicated 2x5 numeric font so it fits in the header without
-competing with the RSSI display.  It is uptime, not wall-clock time.
+clock and the secondary PEAK/FPS/CAND counters use a dedicated 2x5 numeric
+font, so they fit without competing with the RSSI display.  The clock is
+uptime, not wall-clock time.
 
 ## Memory
 

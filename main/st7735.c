@@ -398,11 +398,16 @@ static void draw_finder_page(const finder_view_t *v)
     rect(80, 58, 1, 10, COL_DARK);
     rect(118, 58, 1, 10, COL_DARK);
 
-    if (v->peak < -120) snprintf(tmp, sizeof(tmp), "PEAK --");
-    else snprintf(tmp, sizeof(tmp), "PEAK %d", v->peak);
-    text3x5(4, 72, tmp, 1, COL_TEXT);
-    snprintf(tmp, sizeof(tmp), "FPS %lu", (unsigned long)v->fps);
-    text3x5(120, 72, tmp, 1, COL_TEXT);
+    text3x5(4, 72, "PEAK", 1, COL_TEXT);
+    if (v->peak < -120) {
+        text2x5(24, 72, "--", 1, COL_TEXT);
+    } else {
+        snprintf(tmp, sizeof(tmp), "%d", v->peak);
+        text2x5(24, 72, tmp, 1, COL_TEXT);
+    }
+    text3x5(120, 72, "FPS", 1, COL_TEXT);
+    snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)v->fps);
+    text2x5(136, 72, tmp, 1, COL_TEXT);
 
     age_text(tmp, sizeof(tmp), v->age_ms, v->have_rssi);
     snprintf(buf, sizeof(buf), "LAST %s", tmp);
@@ -427,8 +432,9 @@ static void draw_finder_page(const finder_view_t *v)
 
     snprintf(buf, sizeof(buf), "CH %u %s", v->channel, mode_name(v->chan_mode));
     text3x5(4, 101, buf, 1, COL_TEXT);
-    snprintf(buf, sizeof(buf), "CAND %lu", (unsigned long)v->cand_count);
-    text3x5(72, 101, buf, 1, COL_DIM);
+    text3x5(72, 101, "CAND", 1, COL_DIM);
+    snprintf(buf, sizeof(buf), "%lu", (unsigned long)v->cand_count);
+    text2x5(96, 101, buf, 1, COL_DIM);
     if (v->nrf_ok) snprintf(buf, sizeof(buf), "RF %u%%", v->nrf_duty);
     else snprintf(buf, sizeof(buf), "RF --");
     text3x5(128, 101, buf, 1, COL_DIM);
