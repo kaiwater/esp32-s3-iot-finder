@@ -54,6 +54,11 @@
 #define COL_WARN   RGB565(0xFF, 0xD0, 0x20)
 #define COL_ORANGE RGB565(0xFF, 0x70, 0x10)
 #define COL_RED    RGB565(0xFF, 0x30, 0x30)
+/* RF scan bars: dark red bed with a deep-orange peak column. */
+#define COL_RF_BG   RGB565(0x24, 0x04, 0x04)
+#define COL_RF_AVG  RGB565(0x70, 0x0C, 0x08)
+#define COL_RF_PEAK RGB565(0xD0, 0x40, 0x00)
+#define COL_RF_HOT  RGB565(0xFF, 0x80, 0x10)
 
 static const char *TAG = "st7735";
 static esp_lcd_panel_handle_t s_panel;
@@ -791,18 +796,17 @@ static void draw_rf_scan_page(const ui_state_t *ui)
         int avg = sc[ch].avg;
         int h = bottom - top;
 
-        rect(x, top, bw, h, COL_DARK);
+        rect(x, top, bw, h, COL_RF_BG);
         if (peak) {
             int hp = h * peak / 100;
             if (hp < 1) hp = 1;
-            uint16_t col = peak >= 80 ? COL_WARN :
-                           peak >= 40 ? COL_ACCENT : COL_DIM;
+            uint16_t col = peak >= 80 ? COL_RF_HOT : COL_RF_PEAK;
             rect(x, bottom - hp, bw, hp, col);
         }
         if (avg) {
             int ha = h * avg / 100;
             if (ha < 1) ha = 1;
-            rect(x + 2, bottom - ha, bw - 4, ha, COL_DIM);
+            rect(x + 2, bottom - ha, bw - 4, ha, COL_RF_AVG);
         }
 
         char num[4];
