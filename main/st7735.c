@@ -539,8 +539,15 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
              (unsigned long)v->fps, pk, (unsigned long)v->age_ms);
     text3x5(2, 59, buf, 1, COL_TEXT);
 
-    snprintf(buf, sizeof(buf), "LINK %s  RF %s %u%%", link_name(v->link),
-             v->nrf_ok ? "OK" : "--", v->nrf_duty);
+    if (v->have_ap_load) {
+        unsigned ap_pct = (v->ap_load * 100u + 127u) / 255u;
+        snprintf(buf, sizeof(buf), "LINK %s  RF %s %u%%  AP %u%%/%u",
+                 link_name(v->link), v->nrf_ok ? "OK" : "--", v->nrf_duty,
+                 ap_pct, v->ap_sta_count);
+    } else {
+        snprintf(buf, sizeof(buf), "LINK %s  RF %s %u%%", link_name(v->link),
+                 v->nrf_ok ? "OK" : "--", v->nrf_duty);
+    }
     text3x5(2, 66, buf, 1, COL_TEXT);
 
     if (c && c->synced) {

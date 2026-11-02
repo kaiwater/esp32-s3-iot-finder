@@ -124,7 +124,7 @@ lock                    锁定 / 解除锁定信道
 chan                    手动下一信道
 peak                    峰值清零
 list                    列出最近 60 秒候选
-bss                     列出最近解析到的 BSSID / SSID
+bss                     列出最近 BSSID / SSID / BSS Load
 clock                   打印 WNM 时间 / 时区
 wnm                     打印 IE 67/69/98 计数
 tz CST-8                手动设置 POSIX 时区（兜底）
@@ -225,6 +225,8 @@ Beacon/Probe Response 时重新生成 Time Advertisement，而不是只生成一
 - 默认 1–13 跳频，每信道 150ms；听到目标后自动锁定
 - 国家码 `01` + 手动 1–13，避免 12/13 被默认禁用
 - 被动学习 BSSID/SSID，不调用 `esp_wifi_scan`，不发 probe request
+- 解析 AP 的 BSS Load（IE 11）：站点数、信道利用率、AAC；Info 页显示为 `AP 38%/2`
+- BSS Load 是 AP 聚合数据，不能替代目标 RSSI，只用于判断信道拥挤/辅助诊断
 - 服务时钟优先使用 WNM `Time Advertisement`（IE 69）+ 时区（IE 98）
 - 没有 WNM 数据时回退到 `esp_timer` 开机时间 `UP HH:MM`
 - OUI 厂商表由 `tools/gen-oui.py` 从 IEEE 公开 OUI 列表生成
@@ -258,6 +260,7 @@ partitions.csv
 | 每帧 RSSI、MAC、信道、帧类型 | 5GHz / 5.8GHz |
 | 自动锁目标信道 | 方向 / 角度 |
 | BSSID / SSID / OUI 厂商 | 精确距离 |
+| AP 自报 BSS Load（站点数 / 利用率） | 目标设备自身负载 |
 | 帧率 / 最近出现 / 峰值 | 解调私有协议 |
 | NRF 同频道能量辅助 | 用 NRF 识别 MAC |
 | 802.11v WNM UTC / 时区时间 | 5GHz BSS、无 WNM 的 AP |

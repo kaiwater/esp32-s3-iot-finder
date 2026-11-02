@@ -121,9 +121,11 @@ static void print_status(void)
              (unsigned long)s_view.packets, (unsigned long)s_view.drops,
              s_view.nrf_ok, s_view.nrf_duty,
              (unsigned long)esp_get_free_heap_size());
-    ESP_LOGI("cli", "vendor=%s bssid=%s ssid=%s peak=%d",
+    ESP_LOGI("cli", "vendor=%s bssid=%s ssid=%s peak=%d ap_load=%u%%/%u",
              s_view.vendor[0] ? s_view.vendor : "--", bssid,
-             s_view.have_ssid ? s_view.ssid : "--", s_view.peak);
+             s_view.have_ssid ? s_view.ssid : "--", s_view.peak,
+             s_view.have_ap_load ? (unsigned)((s_view.ap_load * 100u + 127u) / 255u) : 0,
+             s_view.ap_sta_count);
     print_clock();
 }
 

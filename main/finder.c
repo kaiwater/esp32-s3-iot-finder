@@ -35,6 +35,13 @@
 static const char *TAG = "finder";
 
 typedef struct {
+    bool valid;
+    uint16_t stations;
+    uint8_t utilization;
+    uint16_t admission;
+} bss_load_t;
+
+typedef struct {
     uint32_t ms;
     int8_t rssi;
     uint8_t ch;
@@ -46,6 +53,7 @@ typedef struct {
     uint8_t ds_ch;
     uint8_t ssid[FINDER_SSID_MAX];
 
+    bss_load_t load;
     uint8_t time_capab;
     uint8_t time_value_len;
     uint8_t time_value[10];
@@ -139,6 +147,10 @@ typedef struct {
     uint8_t channel;
     int8_t rssi;
     uint32_t last_ms;
+    bool has_load;
+    uint16_t load_sta;
+    uint8_t load_util;
+    uint16_t load_aac;
 } bss_rec_t;
 
 static cand_rec_t s_cand[CAND_TABLE_LEN];
@@ -167,6 +179,10 @@ typedef struct {
     uint8_t ch;
     int8_t rssi;
     uint32_t last_ms;
+    bool has_load;
+    uint16_t load_sta;
+    uint8_t load_util;
+    uint16_t load_aac;
 } bss_dump_t;
 
 static uint32_t now_ms(void)
@@ -200,7 +216,7 @@ static void mac_text(const uint8_t *m, char out[18])
 }
 
 static void parse_ies(const uint8_t *p, int len, uint8_t *ssid,
-                      uint8_t *ssid_len, uint8_t *ds_ch,
+                      uint8_t *ssid_len, uint8_t *ds_ch, bss_load_t *load,
                       uint8_t *time_capab, uint8_t *time_value,
                       uint8_t *time_value_len, uint8_t *tz, uint8_t *tz_len)
 {
@@ -217,6 +233,11 @@ static void parse_ies(const uint8_t *p, int len, uint8_t *ssid,
             *ssid_len = (uint8_t)l;
         } else if (id == 3 && l >= 1) {
             *ds_ch = p[2];
+        } else if (id == 11 && l >= 5) {
+            load->valid = true;
+            load->stations = (uint16_t)(p[2] | ((uint16_t)p[3] << 8));
+            load->utilization = p[4];
+            load->admission = (uint16_t)(p[5] | ((uint16_t)p[6] << 8));
         } else if (id == 67) {
             s_ie67_count++;
         } else if (id == 69 && l >= 11) {
@@ -379,8 +400,8 @@ static void sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         int off = (subtype == 4) ? 24 : 36;
         if (len > off) {
             parse_ies(f + off, len - off, ev.ssid, &ev.ssid_len, &ev.ds_ch,
-                      &ev.time_capab, ev.time_value, &ev.time_value_len,
-                      ev.tz, &ev.tz_len);
+                      &ev.load, &ev.time_capab, ev.time_value,
+                      &ev.time_value_len, ev.tz, &ev.tz_len);
         }
         if ((subtype == 5 || subtype == 8) && len >= 36) {
             uint64_t tsf = 0;
@@ -446,6 +467,12 @@ static void bss_update(const snif_evt_t *ev)
     if (ch >= CH_MIN && ch <= 14) r->channel = ch;
     r->rssi = ev->rssi;
     r->last_ms = ev->ms;
+    if (ev->load.valid) {
+        r->has_load = true;
+        r->load_sta = ev->load.stations;
+        r->load_util = ev->load.utilization;
+        r->load_aac = ev->load.admission;
+    }
 }
 
 static cand_rec_t *cand_find(const uint8_t *mac)
@@ -879,6 +906,10 @@ void finder_print_bss(void)
         list[n].ch = b->channel;
         list[n].rssi = b->rssi;
         list[n].last_ms = b->last_ms;
+        list[n].has_load = b->has_load;
+        list[n].load_sta = b->load_sta;
+        list[n].load_util = b->load_util;
+        list[n].load_aac = b->load_aac;
         n++;
     }
     xSemaphoreGive(s_tab_lock);
@@ -899,9 +930,17 @@ void finder_print_bss(void)
         char mac[18], age[16];
         mac_text(list[i].bssid, mac);
         snprintf(age, sizeof(age), "%lus", (unsigned long)((now - list[i].last_ms) / 1000));
-        ESP_LOGI(TAG, "%2d %s  %4d dBm  ch %u  %s  %s",
-                 i + 1, mac, list[i].rssi, list[i].ch,
-                 list[i].ssid_len ? list[i].ssid : "<hidden>", age);
+        if (list[i].has_load) {
+            ESP_LOGI(TAG, "%2d %s  %4d dBm  ch %u  %s  AP %u%%/%uSTA AAC%u  %s",
+                     i + 1, mac, list[i].rssi, list[i].ch,
+                     list[i].ssid_len ? list[i].ssid : "<hidden>",
+                     (unsigned)((list[i].load_util * 100u + 127u) / 255u),
+                     list[i].load_sta, list[i].load_aac, age);
+        } else {
+            ESP_LOGI(TAG, "%2d %s  %4d dBm  ch %u  %s  %s",
+                     i + 1, mac, list[i].rssi, list[i].ch,
+                     list[i].ssid_len ? list[i].ssid : "<hidden>", age);
+        }
     }
 }
 
@@ -1095,12 +1134,18 @@ void finder_poll(finder_view_t *v)
 
     v->have_ssid = false;
     v->ssid[0] = 0;
+    v->have_ap_load = false;
     if (v->have_bssid) {
         bss_rec_t *b = bss_find(v->bssid);
         if (b && b->ssid_len) {
             memcpy(v->ssid, b->ssid, b->ssid_len);
             v->ssid[b->ssid_len] = 0;
             v->have_ssid = true;
+        }
+        if (b && b->has_load) {
+            v->have_ap_load = true;
+            v->ap_load = b->load_util;
+            v->ap_sta_count = b->load_sta;
         }
     }
     if (!v->have_ssid && s_ssid_hint_len) {

@@ -97,6 +97,20 @@ Only the six-byte target MAC is stored, in NVS namespace `finder`, key `mac`.
 It is written only when the target changes and erased on clear.  There is no
 network stack connection and no telemetry.
 
+## BSS Load
+
+Beacon and probe-response IE 11 is parsed per BSS:
+
+- station count (LE16)
+- channel utilization (0..255, displayed as 0..100%)
+- available admission capacity (LE16)
+
+The latest value is stored in the BSS cache.  The INFO page appends
+`AP <util>%/<stations>` to the link/RF line when the target's BSS is known,
+and `bss` prints the raw values.  BSS Load is an AP-wide aggregate and is only
+used as a congestion/diagnostic hint; it is never mixed into target RSSI or
+used for hot/cold decisions.
+
 ## NRF side channel
 
 One NRF24L01 is initialized opportunistically.  A task maps the current Wi-Fi
