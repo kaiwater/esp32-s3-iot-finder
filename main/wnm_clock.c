@@ -578,6 +578,18 @@ void wnm_clock_init(void)
     load_stored();
 }
 
+static void log_utc(const char *mode, int64_t utc, const uint8_t source[6])
+{
+    int y;
+    unsigned m, d;
+    civil_from_days(utc / 86400, &y, &m, &d);
+    int sod = (int)(utc % 86400);
+    if (sod < 0) sod += 86400;
+    ESP_LOGI(TAG, "UTC %04d-%02u-%02u %02u:%02u:%02u %s from %02X:%02X:%02X:%02X:%02X:%02X",
+             y, m, d, sod / 3600, (sod / 60) % 60, sod % 60, mode,
+             source[0], source[1], source[2], source[3], source[4], source[5]);
+}
+
 void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
                        const uint8_t source[6], uint32_t mono_ms)
 {
@@ -600,7 +612,7 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
         int64_t cur = current_utc(now);
         bool same_src = s_have_anchor_source &&
                         memcmp(source, s_anchor_source, 6) == 0;
-        if (!same_src && base < cur - 10) return;
+        if (!same_src && base < cur - 2) return;
     }
 
     /* On a cold boot give the persisted BSS a chance to appear before a
@@ -641,15 +653,7 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
                     save_stored(source, base, tsf_us, derived, false);
 
                     if (first || old_mode != TIME_MODE_PERSIST || source_changed) {
-                        int y;
-                        unsigned m, d;
-                        civil_from_days(derived / 86400, &y, &m, &d);
-                        int sod = (int)(derived % 86400);
-                        if (sod < 0) sod += 86400;
-                        ESP_LOGI(TAG, "UTC %04d-%02u-%02u %02u:%02u:%02u PERSIST from %02X:%02X:%02X:%02X:%02X:%02X",
-                                 y, m, d, sod / 3600, (sod / 60) % 60, sod % 60,
-                                 source[0], source[1], source[2],
-                                 source[3], source[4], source[5]);
+                        log_utc("PERSIST", derived, source);
                     }
                     return;
                 }
@@ -657,6 +661,28 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
         } else {
             ESP_LOGW(TAG, "stored TSF went backwards; dropping anchor");
             invalidate_stored();
+        }
+    }
+
+    /* Take any advertisement that is current relative to the running clock as
+     * an immediate correction, so a freshly rebuilt Time Value is applied as
+     * soon as it appears.  The small dead-band keeps mesh BSSIDs with nearly
+     * identical adverts from making the seconds jitter. */
+    if (s_synced && s_time_mode != TIME_MODE_TSF) {
+        int64_t cur = current_utc(now);
+        if (base >= cur - 2 && abs64(base - cur) >= 3) {
+            s_anchor_utc = base;
+            s_anchor_ms = mono_ms;
+            s_anchor_base = base;
+            s_anchor_source_ms = now;
+            memcpy(s_anchor_source, source, 6);
+            s_have_anchor_source = true;
+            memcpy(s_source, source, 6);
+            s_have_source = true;
+            s_time_mode = TIME_MODE_DIRECT;
+            save_stored(source, base, tsf_us, base, false);
+            if (abs64(base - cur) >= 5) log_utc("SYNC", base, source);
+            return;
         }
     }
 
@@ -710,17 +736,9 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
 
     if (first || mode_changed || switched_source ||
         abs64(candidate - old_utc) > 5) {
-        int y;
-        unsigned m, d;
-        civil_from_days(candidate / 86400, &y, &m, &d);
-        int sod = (int)(candidate % 86400);
-        if (sod < 0) sod += 86400;
         const char *mname = s_time_mode == TIME_MODE_TSF ? "TSF" :
                             s_time_mode == TIME_MODE_PERSIST ? "PERSIST" : "DIRECT";
-        ESP_LOGI(TAG, "UTC %04d-%02u-%02u %02u:%02u:%02u %s from %02X:%02X:%02X:%02X:%02X:%02X",
-                 y, m, d, sod / 3600, (sod / 60) % 60, sod % 60, mname,
-                 source[0], source[1], source[2],
-                 source[3], source[4], source[5]);
+        log_utc(mname, candidate, source);
     }
 }
 

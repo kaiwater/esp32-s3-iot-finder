@@ -505,12 +505,11 @@ static void draw_finder_page(const finder_view_t *v, const wnm_clock_view_t *c)
     clear_panel();
 
     text3x5(2, 2, "IOT FIND", 2, COL_TEXT);
-    text3x5(128, 2, "2.4G", 1, COL_DIM);
     char clk[16], lab[8];
     const char *label = "UP";
     uint16_t clock_col = COL_DIM;
     if (c && c->synced) {
-        snprintf(clk, sizeof(clk), "%02u:%02u", c->hour, c->min);
+        snprintf(clk, sizeof(clk), "%02u:%02u:%02u", c->hour, c->min, c->sec);
         if (c->has_tz && c->tz_name[0]) {
             label = strlen(c->tz_name) <= 3 ? c->tz_name : "LOC";
         } else {
@@ -518,13 +517,17 @@ static void draw_finder_page(const finder_view_t *v, const wnm_clock_view_t *c)
         }
         clock_col = COL_ACCENT;
     } else {
-        service_clock(clk, sizeof(clk), false);
+        service_clock(clk, sizeof(clk), true);
     }
     fit_text(lab, sizeof(lab), label);
     lab[3] = 0;
     if (!lab[0]) snprintf(lab, sizeof(lab), "UTC");
-    text3x5(110, 7, lab, 1, clock_col);
-    text2x5(126, 7, clk, 1, clock_col);
+    if (label[0] == 'U' && label[1] == 'P') {
+        text3x5(76, 6, lab, 1, clock_col);
+    } else {
+        text3x5(68, 6, lab, 1, clock_col);
+    }
+    text3x5(94, 1, clk, 2, clock_col);
     rect(0, 12, WIDTH, 1, COL_DARK);
 
     draw_mac_line(v);
