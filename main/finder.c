@@ -1,0 +1,1146 @@
+#include "finder.h"
+
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "esp_err.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "oui.h"
+
+#define EVT_QUEUE_LEN 96
+#define CAND_TABLE_LEN 32
+#define BSS_TABLE_LEN 32
+
+#define HOP_MS 150
+#define LEARN_MS 5000
+#define ACTIVE_MS 60000
+#define TOAST_MS 2600
+
+#define CH_MIN 1
+#define CH_MAX 13
+
+static const char *TAG = "finder";
+
+typedef struct {
+    uint32_t ms;
+    int8_t rssi;
+    uint8_t ch;
+    uint8_t type;
+    uint8_t subtype;
+    uint8_t tods;
+    uint8_t fromds;
+    uint8_t ssid_len;
+    uint8_t ds_ch;
+    uint8_t ssid[FINDER_SSID_MAX];
+    uint8_t addr1[6];
+    uint8_t addr2[6];
+    uint8_t addr3[6];
+    uint8_t addr4[6];
+} snif_evt_t;
+
+static QueueHandle_t s_evt_q;
+static SemaphoreHandle_t s_api_lock;
+static SemaphoreHandle_t s_tab_lock;
+static portMUX_TYPE s_stats_mux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_toast_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static nvs_handle_t s_nvs;
+static bool s_nvs_ok;
+static bool s_wifi_ok;
+
+static uint8_t s_target[6];
+static volatile bool s_target_set;
+
+static volatile uint32_t s_t_frames;
+static volatile uint32_t s_t_last_ms;
+static volatile int8_t s_t_rssi;
+static volatile uint8_t s_t_channel;
+static volatile uint8_t s_t_ftype;
+static uint8_t s_t_bssid[6];
+static volatile bool s_t_have_bssid;
+static int8_t s_rssi_hist[5];
+static volatile uint8_t s_rssi_n;
+static volatile uint8_t s_rssi_i;
+
+static int8_t s_peak = -128;
+static char s_ssid_hint[FINDER_SSID_MAX];
+static uint8_t s_ssid_hint_len;
+
+static volatile uint32_t s_learn_until;
+static uint32_t s_packets;
+static volatile uint32_t s_drops;
+
+static uint8_t s_cur_ch = CH_MIN;
+static uint8_t s_hop_ch = CH_MIN;
+static uint8_t s_manual_ch = CH_MIN;
+static uint8_t s_target_ch;
+static bool s_auto_lock = true;
+static finder_chan_mode_t s_mode = FINDER_CH_AUTO;
+static uint32_t s_last_hop_ms;
+
+static uint32_t s_fps_sample_ms;
+static uint32_t s_fps_last_frames;
+static uint32_t s_fps_hist[4];
+static uint8_t s_fps_i;
+static uint8_t s_fps_n;
+
+static char s_toast[FINDER_TOAST_MAX];
+static uint32_t s_toast_until;
+
+typedef struct {
+    bool used;
+    uint8_t mac[6];
+    uint8_t bssid[6];
+    int8_t rssi;
+    int8_t rssi_max;
+    uint8_t channel;
+    uint32_t frames;
+    uint32_t last_ms;
+    uint32_t learn_frames;
+    int8_t learn_rssi;
+    bool local;
+} cand_rec_t;
+
+typedef struct {
+    bool used;
+    uint8_t bssid[6];
+    char ssid[FINDER_SSID_MAX];
+    uint8_t ssid_len;
+    uint8_t channel;
+    int8_t rssi;
+    uint32_t last_ms;
+} bss_rec_t;
+
+static cand_rec_t s_cand[CAND_TABLE_LEN];
+static bss_rec_t s_bss[BSS_TABLE_LEN];
+
+typedef struct {
+    uint8_t mac[6];
+    uint32_t last_ms;
+    int8_t rssi;
+    uint8_t ch;
+} pick_t;
+
+typedef struct {
+    uint8_t mac[6];
+    uint8_t bssid[6];
+    uint32_t last_ms;
+    uint32_t frames;
+    int8_t rssi;
+    uint8_t ch;
+} dump_t;
+
+typedef struct {
+    uint8_t bssid[6];
+    char ssid[FINDER_SSID_MAX];
+    uint8_t ssid_len;
+    uint8_t ch;
+    int8_t rssi;
+    uint32_t last_ms;
+} bss_dump_t;
+
+static uint32_t now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+static bool mac_group(const uint8_t *m) { return (m[0] & 1) != 0; }
+
+static bool mac_zero(const uint8_t *m)
+{
+    for (int i = 0; i < 6; i++)
+        if (m[i]) return false;
+    return true;
+}
+
+static bool mac_valid(const uint8_t *m)
+{
+    return !mac_zero(m) && !mac_group(m);
+}
+
+static bool mac_eq(const uint8_t *a, const uint8_t *b)
+{
+    return memcmp(a, b, 6) == 0;
+}
+
+static void mac_text(const uint8_t *m, char out[18])
+{
+    snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+static void parse_ies(const uint8_t *p, int len, uint8_t *ssid,
+                      uint8_t *ssid_len, uint8_t *ds_ch)
+{
+    *ssid_len = 0;
+    *ds_ch = 0;
+    while (len >= 2) {
+        int id = p[0];
+        int l = p[1];
+        if (l + 2 > len) break;
+        if (id == 0 && l <= 32) {
+            memcpy(ssid, p + 2, (size_t)l);
+            *ssid_len = (uint8_t)l;
+        } else if (id == 3 && l >= 1) {
+            *ds_ch = p[2];
+        }
+        p += 2 + l;
+        len -= 2 + l;
+    }
+}
+
+static void set_channel(uint8_t ch)
+{
+    if (ch < CH_MIN) ch = CH_MIN;
+    if (ch > CH_MAX) ch = CH_MAX;
+    if (ch == s_cur_ch) return;
+
+    esp_err_t err = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    if (err == ESP_OK) {
+        s_cur_ch = ch;
+    } else {
+        ESP_LOGD(TAG, "set channel %u: %s", ch, esp_err_to_name(err));
+    }
+}
+
+static void reset_target_stats(void)
+{
+    portENTER_CRITICAL(&s_stats_mux);
+    s_t_frames = 0;
+    s_t_last_ms = 0;
+    s_t_rssi = -100;
+    s_t_channel = 0;
+    s_t_ftype = 0;
+    s_t_have_bssid = false;
+    memset(s_t_bssid, 0, sizeof(s_t_bssid));
+    memset(s_rssi_hist, 0, sizeof(s_rssi_hist));
+    s_rssi_n = 0;
+    s_rssi_i = 0;
+    portEXIT_CRITICAL(&s_stats_mux);
+
+    s_peak = -128;
+    s_ssid_hint_len = 0;
+    s_ssid_hint[0] = 0;
+
+    s_fps_sample_ms = now_ms();
+    s_fps_last_frames = 0;
+    memset(s_fps_hist, 0, sizeof(s_fps_hist));
+    s_fps_i = 0;
+    s_fps_n = 0;
+}
+
+static int8_t rssi_median(void)
+{
+    int8_t v[5];
+    uint8_t n;
+    portENTER_CRITICAL(&s_stats_mux);
+    n = s_rssi_n;
+    memcpy(v, s_rssi_hist, sizeof(v));
+    portEXIT_CRITICAL(&s_stats_mux);
+
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (v[j] < v[i]) {
+                int8_t t = v[i];
+                v[i] = v[j];
+                v[j] = t;
+            }
+        }
+    }
+    if (!n) return -100;
+    return v[n / 2];
+}
+
+static void sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type)
+{
+    const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
+    const uint8_t *f = pkt->payload;
+    int len = pkt->rx_ctrl.sig_len;
+    if (len < 10) return;
+
+    uint16_t fc = (uint16_t)f[0] | ((uint16_t)f[1] << 8);
+    uint8_t ftype = (uint8_t)((fc >> 2) & 3);
+    uint8_t subtype = (uint8_t)((fc >> 4) & 0x0F);
+    bool tods = (fc & 0x0100) != 0;
+    bool fromds = (fc & 0x0200) != 0;
+    uint32_t now = now_ms();
+
+    uint8_t a1[6] = {0}, a2[6] = {0}, a3[6] = {0}, a4[6] = {0};
+    memcpy(a1, f + 4, 6);
+    if (len >= 16) memcpy(a2, f + 10, 6);
+    if (len >= 24) memcpy(a3, f + 16, 6);
+    if (ftype == 2 && tods && fromds && len >= 30) memcpy(a4, f + 24, 6);
+
+    bool match = false;
+    if (s_target_set) {
+        match = mac_eq(a1, s_target) ||
+                (len >= 16 && mac_eq(a2, s_target)) ||
+                (len >= 24 && mac_eq(a3, s_target)) ||
+                (len >= 30 && mac_eq(a4, s_target));
+    }
+
+    if (match) {
+        const uint8_t *bss = NULL;
+        if (ftype == 0 && len >= 24) {
+            bss = a3;
+        } else if (ftype == 2) {
+            if (tods && !fromds) bss = a1;
+            else if (!tods && fromds) bss = a2;
+            else if (!tods && !fromds) bss = a3;
+        }
+
+        portENTER_CRITICAL(&s_stats_mux);
+        s_t_frames++;
+        s_t_last_ms = now;
+        s_t_rssi = pkt->rx_ctrl.rssi;
+        s_t_channel = pkt->rx_ctrl.channel;
+        s_t_ftype = (uint8_t)((ftype << 4) | subtype);
+        s_rssi_hist[s_rssi_i] = pkt->rx_ctrl.rssi;
+        s_rssi_i = (uint8_t)((s_rssi_i + 1) % 5);
+        if (s_rssi_n < 5) s_rssi_n++;
+        if (bss && !mac_group(bss) && !mac_zero(bss)) {
+            memcpy(s_t_bssid, bss, 6);
+            s_t_have_bssid = true;
+        }
+        portEXIT_CRITICAL(&s_stats_mux);
+    }
+
+    /* The Wi-Fi task gets a compact event.  Parsing, candidate learning and
+     * display all happen in the main task. */
+    if (ftype != 0 && ftype != 2) return;
+
+    snif_evt_t ev = {0};
+    ev.ms = now;
+    ev.rssi = pkt->rx_ctrl.rssi;
+    ev.ch = pkt->rx_ctrl.channel;
+    ev.type = ftype;
+    ev.subtype = subtype;
+    ev.tods = tods ? 1 : 0;
+    ev.fromds = fromds ? 1 : 0;
+    memcpy(ev.addr1, a1, 6);
+    memcpy(ev.addr2, a2, 6);
+    memcpy(ev.addr3, a3, 6);
+    memcpy(ev.addr4, a4, 6);
+
+    if (ftype == 0 && (subtype == 4 || subtype == 5 || subtype == 8)) {
+        int off = (subtype == 4) ? 24 : 36;
+        if (len > off) parse_ies(f + off, len - off, ev.ssid, &ev.ssid_len, &ev.ds_ch);
+        /* Beacon-flood frames carry no SSID and a DS channel that disagrees
+         * with the receive channel.  Do not spend queue space on them. */
+        if ((subtype == 5 || subtype == 8) && !ev.ssid_len && ev.ds_ch &&
+            ev.ds_ch != ev.ch) {
+            return;
+        }
+    }
+
+    if (xQueueSend(s_evt_q, &ev, 0) != pdTRUE) s_drops++;
+}
+
+static bss_rec_t *bss_find(const uint8_t *bssid)
+{
+    for (int i = 0; i < BSS_TABLE_LEN; i++) {
+        if (s_bss[i].used && mac_eq(s_bss[i].bssid, bssid)) return &s_bss[i];
+    }
+    return NULL;
+}
+
+static void bss_update(const snif_evt_t *ev)
+{
+    if (mac_group(ev->addr3) || mac_zero(ev->addr3)) return;
+
+    /* A beacon flood has no SSID and often a DS channel that does not match
+     * the channel it was heard on.  Keep the table for real APs; the target's
+     * own frame still supplies a BSSID if its AP is hidden. */
+    if (!ev->ssid_len && !bss_find(ev->addr3)) return;
+    if (ev->ds_ch && ev->ch && ev->ds_ch != ev->ch) return;
+
+    bss_rec_t *r = bss_find(ev->addr3);
+    if (!r) {
+        int slot = -1;
+        for (int i = 0; i < BSS_TABLE_LEN; i++) {
+            if (!s_bss[i].used) { slot = i; break; }
+        }
+        if (slot < 0) {
+            slot = 0;
+            for (int i = 1; i < BSS_TABLE_LEN; i++) {
+                if (s_bss[i].last_ms < s_bss[slot].last_ms) slot = i;
+            }
+        }
+        r = &s_bss[slot];
+        memset(r, 0, sizeof(*r));
+        memcpy(r->bssid, ev->addr3, 6);
+        r->used = true;
+    }
+
+    if (ev->ssid_len) {
+        memcpy(r->ssid, ev->ssid, ev->ssid_len);
+        r->ssid[ev->ssid_len] = 0;
+        r->ssid_len = ev->ssid_len;
+    }
+    uint8_t ch = ev->ds_ch ? ev->ds_ch : ev->ch;
+    if (ch >= CH_MIN && ch <= 14) r->channel = ch;
+    r->rssi = ev->rssi;
+    r->last_ms = ev->ms;
+}
+
+static cand_rec_t *cand_find(const uint8_t *mac)
+{
+    for (int i = 0; i < CAND_TABLE_LEN; i++) {
+        cand_rec_t *c = &s_cand[i];
+        if (c->used && mac_eq(c->mac, mac)) return c;
+    }
+    return NULL;
+}
+
+static cand_rec_t *cand_get(const uint8_t *mac)
+{
+    cand_rec_t *c = cand_find(mac);
+    if (c) return c;
+
+    uint32_t h = (((uint32_t)mac[3] << 8) | mac[4]) % CAND_TABLE_LEN;
+    int slot = -1;
+    for (int i = 0; i < CAND_TABLE_LEN; i++) {
+        int idx = (int)((h + i) % CAND_TABLE_LEN);
+        if (!s_cand[idx].used) { slot = idx; break; }
+    }
+    if (slot < 0) {
+        slot = (int)h;
+        for (int i = 1; i < CAND_TABLE_LEN; i++) {
+            int idx = (int)((h + i) % CAND_TABLE_LEN);
+            if (s_cand[idx].last_ms < s_cand[slot].last_ms) slot = idx;
+        }
+    }
+
+    c = &s_cand[slot];
+    memset(c, 0, sizeof(*c));
+    memcpy(c->mac, mac, 6);
+    c->used = true;
+    c->local = (mac[0] & 0x02) != 0;
+    c->learn_rssi = -128;
+    return c;
+}
+
+static void cand_touch(const uint8_t *mac, int8_t rssi, uint8_t ch,
+                       const uint8_t *bssid, uint32_t ms, bool learn)
+{
+    if (mac_group(mac) || mac_zero(mac)) return;
+
+    cand_rec_t *c = cand_get(mac);
+    c->frames++;
+    c->last_ms = ms;
+    c->rssi = rssi;
+    c->channel = ch;
+    if (rssi > c->rssi_max || c->frames == 1) c->rssi_max = rssi;
+    if (bssid && !mac_group(bssid) && !mac_zero(bssid)) memcpy(c->bssid, bssid, 6);
+
+    if (learn) {
+        c->learn_frames++;
+        if (rssi > c->learn_rssi) c->learn_rssi = rssi;
+    }
+}
+
+static void drain_events(void)
+{
+    if (!s_evt_q) return;
+    if (xSemaphoreTake(s_tab_lock, pdMS_TO_TICKS(30)) != pdTRUE) return;
+
+    snif_evt_t ev;
+    while (xQueueReceive(s_evt_q, &ev, 0) == pdTRUE) {
+        s_packets++;
+        bool learn = s_learn_until != 0 && ev.ms < s_learn_until;
+
+        if (ev.type == 0) {
+            if (ev.subtype == 8 || ev.subtype == 5) bss_update(&ev);
+
+            if (ev.subtype == 4) {
+                if (s_target_set && mac_eq(ev.addr2, s_target) && ev.ssid_len) {
+                    memcpy(s_ssid_hint, ev.ssid, ev.ssid_len);
+                    s_ssid_hint[ev.ssid_len] = 0;
+                    s_ssid_hint_len = ev.ssid_len;
+                }
+                cand_touch(ev.addr2, ev.rssi, ev.ch, NULL, ev.ms, learn);
+            } else if (ev.subtype == 0 || ev.subtype == 2 || ev.subtype == 11) {
+                cand_touch(ev.addr2, ev.rssi, ev.ch, ev.addr3, ev.ms, learn);
+            }
+        } else if (ev.type == 2) {
+            if (ev.tods && !ev.fromds) {
+                cand_touch(ev.addr2, ev.rssi, ev.ch, ev.addr1, ev.ms, learn);
+            } else if (!ev.tods && ev.fromds) {
+                cand_touch(ev.addr1, ev.rssi, ev.ch, ev.addr2, ev.ms, learn);
+            } else if (!ev.tods && !ev.fromds) {
+                cand_touch(ev.addr2, ev.rssi, ev.ch, ev.addr3, ev.ms, learn);
+                if (!mac_eq(ev.addr1, ev.addr2) && !mac_eq(ev.addr1, ev.addr3))
+                    cand_touch(ev.addr1, ev.rssi, ev.ch, ev.addr3, ev.ms, learn);
+            } else {
+                cand_touch(ev.addr4, ev.rssi, ev.ch, ev.addr2, ev.ms, learn);
+            }
+        }
+    }
+
+    xSemaphoreGive(s_tab_lock);
+}
+
+static void channel_logic(finder_view_t *v, uint32_t now)
+{
+    if (!s_wifi_ok) return;
+
+    if (s_target_set && s_mode == FINDER_CH_AUTO && s_auto_lock) {
+        uint32_t last = s_t_last_ms;
+        uint8_t ch = s_t_channel;
+        if (last && now - last < 1000 && ch >= CH_MIN && ch <= CH_MAX) {
+            s_target_ch = ch;
+            s_mode = FINDER_CH_LOCKED;
+            set_channel(ch);
+        }
+    }
+
+    switch (s_mode) {
+    case FINDER_CH_LOCKED:
+        if (s_target_ch >= CH_MIN && s_target_ch <= CH_MAX) set_channel(s_target_ch);
+        break;
+    case FINDER_CH_MANUAL:
+        set_channel(s_manual_ch);
+        break;
+    case FINDER_CH_AUTO:
+    default:
+        if (s_last_hop_ms == 0 || now - s_last_hop_ms >= HOP_MS) {
+            s_last_hop_ms = now;
+            s_hop_ch = (s_hop_ch >= CH_MAX) ? CH_MIN : (uint8_t)(s_hop_ch + 1);
+            set_channel(s_hop_ch);
+        }
+        break;
+    }
+
+    v->channel = s_cur_ch;
+    v->target_channel = s_target_ch;
+    v->chan_mode = s_mode;
+}
+
+static void nvs_load_target(void)
+{
+    if (!s_nvs_ok) return;
+    uint8_t mac[6];
+    size_t len = sizeof(mac);
+    if (nvs_get_blob(s_nvs, "mac", mac, &len) == ESP_OK && len == sizeof(mac) &&
+        mac_valid(mac)) {
+        memcpy(s_target, mac, 6);
+        s_target_set = true;
+        reset_target_stats();
+        char text[18];
+        mac_text(mac, text);
+        ESP_LOGI(TAG, "restored target %s", text);
+    }
+}
+
+static void nvs_save_target(const uint8_t *mac)
+{
+    if (!s_nvs_ok) return;
+    esp_err_t err = nvs_set_blob(s_nvs, "mac", mac, 6);
+    if (err == ESP_OK) err = nvs_commit(s_nvs);
+    if (err != ESP_OK) ESP_LOGW(TAG, "target save failed: %s", esp_err_to_name(err));
+}
+
+static void nvs_clear_target(void)
+{
+    if (!s_nvs_ok) return;
+    esp_err_t err = nvs_erase_key(s_nvs, "mac");
+    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) err = nvs_commit(s_nvs);
+    if (err != ESP_OK) ESP_LOGW(TAG, "target clear failed: %s", esp_err_to_name(err));
+}
+
+void finder_toast(const char *fmt, ...)
+{
+    char buf[FINDER_TOAST_MAX];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    portENTER_CRITICAL(&s_toast_mux);
+    strncpy(s_toast, buf, sizeof(s_toast) - 1);
+    s_toast[sizeof(s_toast) - 1] = 0;
+    s_toast_until = now_ms() + TOAST_MS;
+    portEXIT_CRITICAL(&s_toast_mux);
+}
+
+bool finder_set_target(const uint8_t mac[6], const char *why)
+{
+    if (!mac_valid(mac)) {
+        finder_toast("INVALID MAC");
+        return false;
+    }
+
+    xSemaphoreTake(s_api_lock, portMAX_DELAY);
+    bool changed = !s_target_set || !mac_eq(s_target, mac);
+
+    s_target_set = false;
+    memcpy(s_target, mac, 6);
+    s_target_set = true;
+    reset_target_stats();
+
+    s_mode = FINDER_CH_AUTO;
+    s_auto_lock = true;
+    s_target_ch = 0;
+    s_learn_until = 0;
+
+    if (changed) nvs_save_target(mac);
+    xSemaphoreGive(s_api_lock);
+
+    char text[18];
+    mac_text(mac, text);
+    ESP_LOGI(TAG, "target set %s (%s)", text, why ? why : "manual");
+    finder_toast("TARGET SET");
+    return true;
+}
+
+bool finder_set_target_str(const char *text)
+{
+    if (!text) return false;
+    char buf[64];
+    strncpy(buf, text, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+
+    char *p = buf;
+    while (*p && !isxdigit((unsigned char)*p)) p++;
+    for (char *q = p; *q; q++) {
+        if (*q == '-') *q = ':';
+    }
+
+    unsigned v[6];
+    if (sscanf(p, "%x:%x:%x:%x:%x:%x",
+               &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6) {
+        return false;
+    }
+    uint8_t mac[6];
+    for (int i = 0; i < 6; i++) {
+        if (v[i] > 0xFF) return false;
+        mac[i] = (uint8_t)v[i];
+    }
+    return finder_set_target(mac, "console");
+}
+
+void finder_clear_target(void)
+{
+    xSemaphoreTake(s_api_lock, portMAX_DELAY);
+    bool had = s_target_set;
+    s_target_set = false;
+    memset(s_target, 0, 6);
+    reset_target_stats();
+    s_mode = FINDER_CH_AUTO;
+    s_auto_lock = true;
+    s_target_ch = 0;
+    s_learn_until = 0;
+    nvs_clear_target();
+    xSemaphoreGive(s_api_lock);
+
+    ESP_LOGI(TAG, "target cleared");
+    finder_toast(had ? "TARGET CLEARED" : "NO TARGET");
+}
+
+void finder_start_learn(void)
+{
+    if (!s_wifi_ok) {
+        finder_toast("WIFI NOT READY");
+        return;
+    }
+
+    xSemaphoreTake(s_api_lock, portMAX_DELAY);
+    s_learn_until = now_ms() + LEARN_MS;
+    s_mode = FINDER_CH_AUTO;
+    s_auto_lock = false;
+    s_last_hop_ms = 0;
+    xSemaphoreGive(s_api_lock);
+
+    xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+    for (int i = 0; i < CAND_TABLE_LEN; i++) {
+        s_cand[i].learn_frames = 0;
+        s_cand[i].learn_rssi = -128;
+    }
+    xSemaphoreGive(s_tab_lock);
+
+    ESP_LOGI(TAG, "learning for %d ms", LEARN_MS);
+    finder_toast("LEARNING 5S");
+}
+
+void finder_toggle_lock(void)
+{
+    xSemaphoreTake(s_api_lock, portMAX_DELAY);
+    if (!s_target_set) {
+        xSemaphoreGive(s_api_lock);
+        finder_toast("SET TARGET FIRST");
+        return;
+    }
+
+    if (s_mode == FINDER_CH_AUTO) {
+        uint8_t ch = s_t_channel;
+        if (ch < CH_MIN || ch > CH_MAX) ch = s_cur_ch;
+        s_target_ch = ch;
+        s_manual_ch = ch;
+        s_mode = FINDER_CH_LOCKED;
+        s_auto_lock = false;
+        set_channel(ch);
+        xSemaphoreGive(s_api_lock);
+        finder_toast("LOCK CH %u", ch);
+    } else {
+        s_mode = FINDER_CH_AUTO;
+        s_auto_lock = false;
+        s_last_hop_ms = 0;
+        xSemaphoreGive(s_api_lock);
+        finder_toast("CHANNEL HOP");
+    }
+}
+
+void finder_next_channel(void)
+{
+    xSemaphoreTake(s_api_lock, portMAX_DELAY);
+    s_manual_ch = (s_cur_ch >= CH_MAX) ? CH_MIN : (uint8_t)(s_cur_ch + 1);
+    s_target_ch = s_manual_ch;
+    s_mode = FINDER_CH_MANUAL;
+    s_auto_lock = false;
+    set_channel(s_manual_ch);
+    xSemaphoreGive(s_api_lock);
+    finder_toast("MANUAL CH %u", s_manual_ch);
+}
+
+void finder_clear_peak(void)
+{
+    if (s_target_set && s_t_last_ms) {
+        portENTER_CRITICAL(&s_stats_mux);
+        s_peak = s_t_rssi;
+        portEXIT_CRITICAL(&s_stats_mux);
+    } else {
+        s_peak = -128;
+    }
+    finder_toast("PEAK CLEARED");
+}
+
+static void target_lock_channel(uint8_t ch)
+{
+    if (ch < CH_MIN || ch > CH_MAX) return;
+    xSemaphoreTake(s_api_lock, portMAX_DELAY);
+    if (s_target_set) {
+        s_target_ch = ch;
+        s_manual_ch = ch;
+        s_mode = FINDER_CH_LOCKED;
+        s_auto_lock = true;
+        set_channel(ch);
+    }
+    xSemaphoreGive(s_api_lock);
+}
+
+void finder_next_candidate(void)
+{
+    pick_t list[CAND_TABLE_LEN];
+    int n = 0;
+    uint32_t now = now_ms();
+
+    xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+    for (int i = 0; i < CAND_TABLE_LEN; i++) {
+        cand_rec_t *c = &s_cand[i];
+        if (!c->used || now - c->last_ms > ACTIVE_MS) continue;
+        memcpy(list[n].mac, c->mac, 6);
+        list[n].last_ms = c->last_ms;
+        list[n].rssi = c->rssi;
+        list[n].ch = c->channel;
+        n++;
+    }
+    xSemaphoreGive(s_tab_lock);
+
+    if (!n) {
+        finder_toast("NO CANDIDATES");
+        return;
+    }
+
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (list[j].last_ms > list[i].last_ms) {
+                pick_t t = list[i];
+                list[i] = list[j];
+                list[j] = t;
+            }
+        }
+    }
+
+    int next = 0;
+    if (s_target_set) {
+        for (int i = 0; i < n; i++) {
+            if (mac_eq(list[i].mac, s_target)) {
+                next = (i + 1) % n;
+                break;
+            }
+        }
+    }
+
+    finder_set_target(list[next].mac, "candidate");
+    target_lock_channel(list[next].ch);
+}
+
+void finder_print_bss(void)
+{
+    bss_dump_t list[BSS_TABLE_LEN];
+    int n = 0;
+    uint32_t now = now_ms();
+
+    xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+    for (int i = 0; i < BSS_TABLE_LEN; i++) {
+        bss_rec_t *b = &s_bss[i];
+        if (!b->used) continue;
+        memcpy(list[n].bssid, b->bssid, 6);
+        memcpy(list[n].ssid, b->ssid, sizeof(list[n].ssid));
+        list[n].ssid[FINDER_SSID_MAX - 1] = 0;
+        list[n].ssid_len = b->ssid_len;
+        list[n].ch = b->channel;
+        list[n].rssi = b->rssi;
+        list[n].last_ms = b->last_ms;
+        n++;
+    }
+    xSemaphoreGive(s_tab_lock);
+
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (list[j].rssi > list[i].rssi) {
+                bss_dump_t t = list[i];
+                list[i] = list[j];
+                list[j] = t;
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "%d known BSS(s)", n);
+    int shown = n > 20 ? 20 : n;
+    for (int i = 0; i < shown; i++) {
+        char mac[18], age[16];
+        mac_text(list[i].bssid, mac);
+        snprintf(age, sizeof(age), "%lus", (unsigned long)((now - list[i].last_ms) / 1000));
+        ESP_LOGI(TAG, "%2d %s  %4d dBm  ch %u  %s  %s",
+                 i + 1, mac, list[i].rssi, list[i].ch,
+                 list[i].ssid_len ? list[i].ssid : "<hidden>", age);
+    }
+}
+
+void finder_print_candidates(void)
+{
+    dump_t list[CAND_TABLE_LEN];
+    int n = 0;
+    uint32_t now = now_ms();
+
+    xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+    for (int i = 0; i < CAND_TABLE_LEN; i++) {
+        cand_rec_t *c = &s_cand[i];
+        if (!c->used || now - c->last_ms > ACTIVE_MS) continue;
+        memcpy(list[n].mac, c->mac, 6);
+        memcpy(list[n].bssid, c->bssid, 6);
+        list[n].last_ms = c->last_ms;
+        list[n].frames = c->frames;
+        list[n].rssi = c->rssi;
+        list[n].ch = c->channel;
+        n++;
+    }
+    xSemaphoreGive(s_tab_lock);
+
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (list[j].last_ms > list[i].last_ms) {
+                dump_t t = list[i];
+                list[i] = list[j];
+                list[j] = t;
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "%d recent candidate(s)", n);
+    int shown = n > 16 ? 16 : n;
+    for (int i = 0; i < shown; i++) {
+        char mac[18], bss[18], age[16];
+        mac_text(list[i].mac, mac);
+        mac_text(list[i].bssid, bss);
+        snprintf(age, sizeof(age), "%lus", (unsigned long)((now - list[i].last_ms) / 1000));
+        ESP_LOGI(TAG, "%2d %s  %4d dBm  ch %u  %lu f  bssid %s  %s",
+                 i + 1, mac, list[i].rssi, list[i].ch,
+                 (unsigned long)list[i].frames, bss, age);
+    }
+}
+
+bool finder_init(void)
+{
+    s_api_lock = xSemaphoreCreateMutex();
+    s_tab_lock = xSemaphoreCreateMutex();
+    s_evt_q = xQueueCreate(EVT_QUEUE_LEN, sizeof(snif_evt_t));
+    if (!s_api_lock || !s_tab_lock || !s_evt_q) {
+        ESP_LOGE(TAG, "no memory for finder objects");
+        return false;
+    }
+
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    if (err == ESP_OK) err = nvs_open("finder", NVS_READWRITE, &s_nvs);
+    s_nvs_ok = (err == ESP_OK);
+    if (!s_nvs_ok) ESP_LOGW(TAG, "NVS unavailable: %s", esp_err_to_name(err));
+
+    nvs_load_target();
+    s_fps_sample_ms = now_ms();
+
+    err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "netif init: %s", esp_err_to_name(err));
+    }
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "event loop: %s", esp_err_to_name(err));
+    }
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "wifi init: %s", esp_err_to_name(err));
+        return false;
+    }
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+
+    err = esp_wifi_set_mode(WIFI_MODE_NULL);
+    if (err == ESP_OK) err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "wifi start: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    wifi_country_t country = {0};
+    strcpy(country.cc, "01");
+    country.schan = 1;
+    country.nchan = 13;
+    country.max_tx_power = 20;
+    country.policy = WIFI_COUNTRY_POLICY_MANUAL;
+    err = esp_wifi_set_country(&country);
+    if (err != ESP_OK) ESP_LOGW(TAG, "country: %s", esp_err_to_name(err));
+
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    wifi_promiscuous_filter_t filter = {
+        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT |
+                       WIFI_PROMIS_FILTER_MASK_DATA |
+                       WIFI_PROMIS_FILTER_MASK_CTRL,
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filter));
+    ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(sniffer_cb));
+    ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
+
+    s_cur_ch = 1;
+    esp_wifi_set_channel(s_cur_ch, WIFI_SECOND_CHAN_NONE);
+    s_wifi_ok = true;
+    ESP_LOGI(TAG, "Wi-Fi sniffer ready, hopping 1-%d", CH_MAX);
+    return true;
+}
+
+void finder_poll(finder_view_t *v)
+{
+    if (!v) return;
+    uint32_t now = now_ms();
+
+    drain_events();
+
+    v->wifi_ok = s_wifi_ok;
+    v->have_target = s_target_set;
+    if (s_target_set) memcpy(v->target, s_target, 6);
+    else memset(v->target, 0, 6);
+
+    uint32_t last;
+    uint32_t frames;
+    int8_t raw;
+    bool have_bssid;
+    uint8_t bssid[6];
+    portENTER_CRITICAL(&s_stats_mux);
+    last = s_t_last_ms;
+    frames = s_t_frames;
+    raw = s_t_rssi;
+    have_bssid = s_t_have_bssid;
+    memcpy(bssid, s_t_bssid, 6);
+    portEXIT_CRITICAL(&s_stats_mux);
+
+    v->frames_total = frames;
+    v->have_rssi = s_target_set && last != 0 && s_rssi_n > 0;
+    if (v->have_rssi) {
+        v->rssi_raw = raw;
+        v->rssi = rssi_median();
+        v->age_ms = now - last;
+        int p = ((int)v->rssi + 95) * 100 / 70;
+        if (p < 0) p = 0;
+        if (p > 100) p = 100;
+        v->percent = (uint8_t)p;
+        if (s_peak < -120 || raw > s_peak) s_peak = raw;
+    } else {
+        v->rssi = -100;
+        v->rssi_raw = -100;
+        v->age_ms = 0;
+        v->percent = 0;
+    }
+    v->peak = s_peak;
+
+    if (!s_target_set) v->link = FINDER_LINK_NONE;
+    else if (!v->have_rssi) v->link = FINDER_LINK_LOST;
+    else if (v->age_ms < 5000) v->link = FINDER_LINK_SEEN;
+    else if (v->age_ms < 30000) v->link = FINDER_LINK_WEAK;
+    else v->link = FINDER_LINK_LOST;
+
+    if (frames >= s_fps_last_frames) {
+        if (s_fps_sample_ms == 0) s_fps_sample_ms = now;
+        if (now - s_fps_sample_ms >= 1000) {
+            uint32_t d = frames - s_fps_last_frames;
+            s_fps_hist[s_fps_i] = d;
+            s_fps_i = (uint8_t)((s_fps_i + 1) % 4);
+            if (s_fps_n < 4) s_fps_n++;
+            s_fps_last_frames = frames;
+            s_fps_sample_ms = now;
+        }
+    } else {
+        s_fps_last_frames = frames;
+        s_fps_sample_ms = now;
+        s_fps_n = 0;
+    }
+    uint32_t sum = 0;
+    for (int i = 0; i < s_fps_n; i++) sum += s_fps_hist[i];
+    v->fps = s_fps_n ? sum / s_fps_n : 0;
+
+    v->have_bssid = s_target_set && have_bssid;
+    if (v->have_bssid) memcpy(v->bssid, bssid, 6);
+
+    v->have_ssid = false;
+    v->ssid[0] = 0;
+    if (v->have_bssid) {
+        bss_rec_t *b = bss_find(v->bssid);
+        if (b && b->ssid_len) {
+            memcpy(v->ssid, b->ssid, b->ssid_len);
+            v->ssid[b->ssid_len] = 0;
+            v->have_ssid = true;
+        }
+    }
+    if (!v->have_ssid && s_ssid_hint_len) {
+        memcpy(v->ssid, s_ssid_hint, s_ssid_hint_len);
+        v->ssid[s_ssid_hint_len] = 0;
+        v->have_ssid = true;
+    }
+
+    v->vendor[0] = 0;
+    if (s_target_set) {
+        const char *name = oui_lookup(v->target);
+        if (name) {
+            strncpy(v->vendor, name, sizeof(v->vendor) - 1);
+            v->vendor[sizeof(v->vendor) - 1] = 0;
+        } else {
+            strncpy(v->vendor, (s_target[0] & 0x02) ? "LOCAL ADMIN" : "UNKNOWN",
+                    sizeof(v->vendor) - 1);
+            v->vendor[sizeof(v->vendor) - 1] = 0;
+        }
+    }
+
+    channel_logic(v, now);
+
+    v->packets = s_packets;
+    v->drops = s_drops;
+
+    int active = 0;
+    bool have_best = false;
+    uint8_t best_mac[6] = {0};
+    int8_t best_rssi = -128;
+    uint32_t best_frames = 0;
+    int32_t best_score = -1;
+    bool learning = s_learn_until != 0 && now < s_learn_until;
+
+    xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+    for (int i = 0; i < CAND_TABLE_LEN; i++) {
+        cand_rec_t *c = &s_cand[i];
+        if (!c->used || now - c->last_ms > ACTIVE_MS) continue;
+        active++;
+
+        int32_t score;
+        int8_t use_rssi;
+        uint32_t use_frames;
+        if (learning) {
+            if (!c->learn_frames) continue;
+            use_rssi = c->learn_rssi;
+            use_frames = c->learn_frames;
+            score = (int32_t)(use_rssi + 100) * 100 +
+                    (int32_t)(use_frames > 99 ? 99 : use_frames);
+        } else {
+            use_rssi = c->rssi;
+            use_frames = c->frames;
+            score = (int32_t)(use_rssi + 100) * 1000 +
+                    (int32_t)(use_frames > 999 ? 999 : use_frames);
+        }
+        if (score > best_score) {
+            best_score = score;
+            have_best = true;
+            memcpy(best_mac, c->mac, 6);
+            best_rssi = use_rssi;
+            best_frames = use_frames;
+        }
+    }
+    xSemaphoreGive(s_tab_lock);
+
+    v->cand_count = (uint32_t)active;
+    v->have_best = have_best;
+    if (have_best) {
+        memcpy(v->best_mac, best_mac, 6);
+        v->best_rssi = best_rssi;
+        v->best_frames = best_frames;
+    }
+
+    if (s_learn_until != 0 && now >= s_learn_until) {
+        uint8_t chosen[6] = {0};
+        uint8_t chosen_ch = 0;
+        bool found = false;
+        int32_t best = -1;
+
+        xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+        for (int i = 0; i < CAND_TABLE_LEN; i++) {
+            cand_rec_t *c = &s_cand[i];
+            if (!c->used || !c->learn_frames) continue;
+            int32_t score = (int32_t)(c->learn_rssi + 100) * 1000 +
+                            (int32_t)(c->learn_frames > 999 ? 999 : c->learn_frames);
+            if (score > best) {
+                best = score;
+                memcpy(chosen, c->mac, 6);
+                chosen_ch = c->channel;
+                found = true;
+            }
+        }
+        xSemaphoreGive(s_tab_lock);
+
+        s_learn_until = 0;
+        if (found) {
+            finder_set_target(chosen, "learned");
+            target_lock_channel(chosen_ch);
+        } else {
+            ESP_LOGW(TAG, "learning finished with no candidate");
+            finder_toast("NO CANDIDATE");
+        }
+    }
+
+    v->learning = s_learn_until != 0 && now < s_learn_until;
+    v->learn_left_ms = v->learning ? (s_learn_until - now) : 0;
+
+    portENTER_CRITICAL(&s_toast_mux);
+    if (now < s_toast_until) {
+        memcpy(v->toast, s_toast, sizeof(v->toast));
+        v->toast[sizeof(v->toast) - 1] = 0;
+        v->toast_until = s_toast_until;
+    } else {
+        v->toast[0] = 0;
+        v->toast_until = 0;
+    }
+    portEXIT_CRITICAL(&s_toast_mux);
+}
