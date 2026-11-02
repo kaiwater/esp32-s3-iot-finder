@@ -465,7 +465,7 @@ static void draw_finder_page(const finder_view_t *v)
 
 static void draw_info_page(const finder_view_t *v)
 {
-    char buf[96], tmp[64], mac[18], clk[16];
+    char buf[96], tmp[64], mac[18], clk[16], pk[8];
 
     clear_panel();
 
@@ -512,8 +512,10 @@ static void draw_info_page(const finder_view_t *v)
              (unsigned long)v->drops);
     text3x5(2, 52, buf, 1, COL_TEXT);
 
-    snprintf(buf, sizeof(buf), "FPS %lu  PEAK %d  AGE %luMS",
-             (unsigned long)v->fps, v->peak, (unsigned long)v->age_ms);
+    if (v->peak < -120) snprintf(pk, sizeof(pk), "--");
+    else snprintf(pk, sizeof(pk), "%d", v->peak);
+    snprintf(buf, sizeof(buf), "FPS %lu  PEAK %s  AGE %luMS",
+             (unsigned long)v->fps, pk, (unsigned long)v->age_ms);
     text3x5(2, 59, buf, 1, COL_TEXT);
 
     snprintf(buf, sizeof(buf), "LINK %s  RF %s %u%%", link_name(v->link),
