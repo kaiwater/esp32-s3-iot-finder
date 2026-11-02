@@ -186,13 +186,17 @@ static bool parse_rule(const char **pp, tz_rule_t *r)
         if (!parse_int(&p, &r->month, 2) || *p++ != '.') return false;
         if (!parse_int(&p, &r->week, 1) || *p++ != '.') return false;
         if (!parse_int(&p, &r->wday, 1)) return false;
+        if (r->month < 1 || r->month > 12 || r->week < 1 || r->week > 5 ||
+            r->wday > 6) return false;
     } else if (*p == 'J') {
         p++;
         r->type = RULE_J;
         if (!parse_int(&p, &r->day, 3)) return false;
+        if (r->day < 1 || r->day > 365) return false;
     } else if (isdigit((unsigned char)*p)) {
         r->type = RULE_N;
         if (!parse_int(&p, &r->day, 3)) return false;
+        if (r->day > 365) return false;
     } else {
         return false;
     }
