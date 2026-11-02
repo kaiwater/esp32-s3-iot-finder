@@ -504,30 +504,20 @@ static void draw_finder_page(const finder_view_t *v, const wnm_clock_view_t *c)
 
     clear_panel();
 
-    text3x5(2, 2, "IOT FIND", 2, COL_TEXT);
-    char clk[16], lab[8];
-    const char *label = "UP";
+    char clk[16], date[16];
     uint16_t clock_col = COL_DIM;
     if (c && c->synced) {
+        snprintf(date, sizeof(date), "%04u-%02u-%02u",
+                 c->year, c->month, c->day);
         snprintf(clk, sizeof(clk), "%02u:%02u:%02u", c->hour, c->min, c->sec);
-        if (c->has_tz && c->tz_name[0]) {
-            label = strlen(c->tz_name) <= 3 ? c->tz_name : "LOC";
-        } else {
-            label = "UTC";
-        }
         clock_col = COL_ACCENT;
+        text3x5(4, 1, date, 2, clock_col);
+        text3x5(90, 1, clk, 2, clock_col);
     } else {
         service_clock(clk, sizeof(clk), true);
+        text3x5(70, 1, "UP", 2, clock_col);
+        text3x5(90, 1, clk, 2, clock_col);
     }
-    fit_text(lab, sizeof(lab), label);
-    lab[3] = 0;
-    if (!lab[0]) snprintf(lab, sizeof(lab), "UTC");
-    if (label[0] == 'U' && label[1] == 'P') {
-        text3x5(76, 6, lab, 1, clock_col);
-    } else {
-        text3x5(68, 6, lab, 1, clock_col);
-    }
-    text3x5(94, 1, clk, 2, clock_col);
     rect(0, 12, WIDTH, 1, COL_DARK);
 
     draw_mac_line(v);
@@ -717,9 +707,6 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
         snprintf(buf, sizeof(buf), "TIME %04u-%02u-%02u %02u:%02u:%02u",
                  c->year, c->month, c->day, c->hour, c->min, c->sec);
         text3x5(2, 73, buf, 1, COL_TEXT);
-        fit_text(tmp, sizeof(tmp), (c->has_tz && c->tz_name[0]) ? c->tz_name : "UTC");
-        tmp[4] = 0;
-        text3x5(102, 73, tmp, 1, COL_DIM);
     } else {
         text3x5(2, 73, "TIME WAITING FOR AP", 1, COL_DIM);
     }

@@ -58,6 +58,7 @@ typedef struct {
     int64_t utc;
     int64_t ad_base;
     char tz[40];
+    uint64_t reserved3; /* keeps the NVS record layout stable */
 } stored_anchor_t;
 
 typedef struct {
@@ -618,9 +619,10 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
     /* On a cold boot give the persisted BSS a chance to appear before a
      * different AP overwrites its record with a stale advertisement. */
     if (s_stored_valid && !s_synced &&
-        memcmp(source, s_stored.bssid, 6) != 0 &&
-        (int32_t)(s_stored_wait_ms - now) > 0) {
-        return;
+        memcmp(source, s_stored.bssid, 6) != 0) {
+        if ((int32_t)(s_stored_wait_ms - now) > 0) return;
+        /* The real UTC can never be older than the last time we stored. */
+        if (base < s_stored.utc - 2) return;
     }
 
     /* Another BSS with a much newer Time Advertisement is more useful than a

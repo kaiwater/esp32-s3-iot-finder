@@ -174,9 +174,10 @@ the Wi-Fi sniffer.  If no module is found, the UI shows `RF --`.
 ## Service clock and WNM time
 
 The header clock is real local time when a 2.4GHz AP advertises 802.11v WNM
-time, otherwise it falls back to `UP HH:MM:SS` uptime.  It is rendered at 2x
-scale with seconds; the old `2.4G` corner label was removed because the whole
-board is 2.4GHz-only.
+time, otherwise it falls back to `UP HH:MM:SS` uptime.  The synchronized
+header is a full-width `YYYY-MM-DD  HH:MM:SS` banner rendered at 2x scale;
+there is no timezone label, and the old `2.4G` corner label was removed because
+the whole board is 2.4GHz-only.
 
 - IE **69** Time Advertisement with timing capability 2 contains a 10-byte
   broken-down UTC value.  In a standards-compliant AP the value is the UTC at
