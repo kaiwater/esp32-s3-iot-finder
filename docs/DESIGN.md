@@ -104,13 +104,25 @@ channel to the NRF channel at the same centre frequency, samples RPD eight
 times, and publishes 0–100%.  The NRF runs independently and does not affect
 the Wi-Fi sniffer.  If no module is found, the UI shows `RF --`.
 
-## Service clock
+## Service clock and WNM time
 
-There is no RTC or network time source.  The header shows `UP HH:MM` and the
-INFO page shows `UP HH:MM:SS`, both derived from `esp_timer_get_time()`.  The
-clock and the secondary PEAK/FPS/CAND counters use a dedicated 2x5 numeric
-font, so they fit without competing with the RSSI display.  The clock is
-uptime, not wall-clock time.
+The header clock is real local time when a 2.4GHz AP advertises 802.11v WNM
+time, otherwise it falls back to `UP HH:MM` uptime.
+
+- IE **69** Time Advertisement with timing capability 2 contains a 10-byte
+  broken-down UTC value for the instant when the AP TSF was zero.  Adding the
+  8-byte TSF from the same Beacon/Probe Response gives current UTC.
+- IE **98** Time Zone contains a POSIX TZ string (`CST-8`,
+  `CET-1CEST,M3.5.0,M10.5.0/3`, ...).  The parser handles the standard offset,
+  optional DST offset, and `Mmonth.week.weekday` transition rules.
+- The clock keeps running from `esp_timer_get_time()` between adverts and
+  re-syncs on later frames from the same AP.
+- If no time element is seen, the UI falls back to uptime.
+- 67 is **not** the time element; it is BSS AVB Admission Capacity.  The `wnm`
+  serial command prints counters for 67/69/98 for diagnostics.
+
+The header and the secondary PEAK/FPS/CAND counters use a dedicated 2x5
+numeric font, so they fit without competing with the RSSI display.
 
 ## Memory
 

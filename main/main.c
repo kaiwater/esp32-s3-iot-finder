@@ -11,10 +11,12 @@
 #include "finder.h"
 #include "nrf_aux.h"
 #include "st7735.h"
+#include "wnm_clock.h"
 
 static const char *TAG = "iot-finder";
 static volatile int s_button_event;
 static finder_view_t s_view;
+static wnm_clock_view_t s_clock;
 static int s_page;
 
 static void button_task(void *arg)
@@ -71,8 +73,29 @@ static void print_help(void)
     ESP_LOGI("cli", "  peak                  clear peak");
     ESP_LOGI("cli", "  list                  print recent candidates");
     ESP_LOGI("cli", "  bss                   print recent BSSID/SSID");
+    ESP_LOGI("cli", "  clock                 print WNM time / time zone");
+    ESP_LOGI("cli", "  wnm                   print time-element counters");
+    ESP_LOGI("cli", "  tz CST-8              manual POSIX time zone fallback");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
+}
+
+static void print_clock(void)
+{
+    if (!s_clock.synced) {
+        ESP_LOGI("cli", "clock=-- tz=%s", s_clock.tz_name[0] ? s_clock.tz_name : "--");
+        return;
+    }
+    char src[18] = "--";
+    if (s_clock.have_source) {
+        snprintf(src, sizeof(src), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 s_clock.source[0], s_clock.source[1], s_clock.source[2],
+                 s_clock.source[3], s_clock.source[4], s_clock.source[5]);
+    }
+    ESP_LOGI("cli", "clock=%04u-%02u-%02u %02u:%02u:%02u tz=%s off=%+ld age=%lu src=%s",
+             s_clock.year, s_clock.month, s_clock.day, s_clock.hour, s_clock.min,
+             s_clock.sec, s_clock.tz_name[0] ? s_clock.tz_name : "UTC",
+             (long)s_clock.offset_sec, (unsigned long)s_clock.age_ms, src);
 }
 
 static void print_status(void)
@@ -99,6 +122,7 @@ static void print_status(void)
     ESP_LOGI("cli", "vendor=%s bssid=%s ssid=%s peak=%d",
              s_view.vendor[0] ? s_view.vendor : "--", bssid,
              s_view.have_ssid ? s_view.ssid : "--", s_view.peak);
+    print_clock();
 }
 
 static void handle_line(char *line)
@@ -133,6 +157,13 @@ static void handle_line(char *line)
         finder_print_bss();
     } else if (!strcmp(line, "status")) {
         print_status();
+    } else if (!strcmp(line, "clock") || !strcmp(line, "time")) {
+        print_clock();
+    } else if (!strcmp(line, "wnm")) {
+        finder_print_wnm();
+    } else if (!strncmp(line, "tz ", 3)) {
+        const char *arg = line + 3;
+        wnm_clock_set_tz((const uint8_t *)arg, (uint8_t)strlen(arg), NULL);
     } else if (!strcmp(line, "reboot")) {
         esp_restart();
     } else if (!strcmp(line, "help") || !strcmp(line, "?")) {
@@ -196,7 +227,9 @@ void app_main(void)
     memset(&s_view, 0, sizeof(s_view));
     s_view.link = FINDER_LINK_NONE;
     s_view.wifi_ok = finder_init();
-    st7735_draw_finder(&s_view, 0);
+    wnm_clock_init();
+    wnm_clock_poll(&s_clock);
+    st7735_draw_finder(&s_view, &s_clock, 0);
 
     nrf_aux_start();
     xTaskCreatePinnedToCore(button_task, "buttons", 2048, NULL, 2, NULL, 1);
@@ -222,7 +255,8 @@ void app_main(void)
         }
         if (now - last_draw >= 100) {
             last_draw = now;
-            st7735_draw_finder(&s_view, s_page);
+            wnm_clock_poll(&s_clock);
+            st7735_draw_finder(&s_view, &s_clock, s_page);
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));

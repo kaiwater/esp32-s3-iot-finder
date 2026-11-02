@@ -125,6 +125,9 @@ chan                    手动下一信道
 peak                    峰值清零
 list                    列出最近 60 秒候选
 bss                     列出最近解析到的 BSSID / SSID
+clock                   打印 WNM 时间 / 时区
+wnm                     打印 IE 67/69/98 计数
+tz CST-8                手动设置 POSIX 时区（兜底）
 status                  打印当前状态
 reboot                  重启
 help                    帮助
@@ -137,7 +140,7 @@ help                    帮助
 ```text
 ┌────────────────────────┐
 │ IOT FIND      2.4G     │
-│                UP 00:42│
+│                CST 09:42│
 ├────────────────────────┤
 │ A4:C1:38:xx:xx:xx LOCK │
 │ Espressif        CH 6  │
@@ -163,6 +166,32 @@ help                    帮助
 
 ---
 
+## WNM 时间同步
+
+固件会被动监听 Beacon / Probe Response 里的：
+
+- **IE 69 Time Advertisement**（注意：标准 ID 是 **69**，67 是 BSS AVB Admission Capacity）
+- **IE 98 Time Zone**（ASCII POSIX TZ 字符串，例如 `CST-8`、`CET-1CEST,M3.5.0,M10.5.0/3`）
+
+`time_advertisement=2` 的 10 字节 Time Value 是「TSF 为 0 时的 UTC 日历时间」，
+加上同一个 Beacon 的 8 字节 TSF 就得到当前 UTC。
+时区元素按 POSIX TZ 解析，支持标准偏移和 `M月.周.星期` 形式的 DST 规则。
+
+- 同步后右上角显示 `CST 09:42`，Info 页显示完整日期、时间和时区
+- Info 页底部 `SYNC xx:xx:xx` 显示时间来源 BSSID 的后 3 字节
+- 没有时间元素时回退为 `UP HH:MM`（开机时长）
+- 只解析 2.4GHz；5GHz 的 BSS 这套硬件收不到
+- AP 的 **2.4G wifi-iface** 上要有：
+
+```sh
+option time_advertisement '2'
+option time_zone 'CST-8'
+```
+
+串口 `wnm` 可以看 IE 67/69/98 的计数；`tz CST-8` 可以手动兜底。
+部分 hostapd 把 Time Zone 只放进 Probe Response；如果只看到 UTC，等附近有客户端探测，
+或者直接用 `tz CST-8` 设置本地时区。
+
 ## 实现要点
 
 - `esp_wifi_set_promiscuous(true)`，过滤器 `MGMT | DATA | CTRL`
@@ -174,7 +203,8 @@ help                    帮助
 - 默认 1–13 跳频，每信道 150ms；听到目标后自动锁定
 - 国家码 `01` + 手动 1–13，避免 12/13 被默认禁用
 - 被动学习 BSSID/SSID，不调用 `esp_wifi_scan`，不发 probe request
-- 服务时钟使用 `esp_timer` 开机时间，Info 页显示 `UP HH:MM:SS`
+- 服务时钟优先使用 WNM `Time Advertisement`（IE 69）+ 时区（IE 98）
+- 没有 WNM 数据时回退到 `esp_timer` 开机时间 `UP HH:MM`
 - OUI 厂商表由 `tools/gen-oui.py` 从 IEEE 公开 OUI 列表生成
 - NRF 只读 `RPD`，跟随当前 Wi-Fi 频道中心，8 次采样得到 0–100%
 
@@ -208,11 +238,13 @@ partitions.csv
 | BSSID / SSID / OUI 厂商 | 精确距离 |
 | 帧率 / 最近出现 / 峰值 | 解调私有协议 |
 | NRF 同频道能量辅助 | 用 NRF 识别 MAC |
+| 802.11v WNM UTC / 时区时间 | 5GHz BSS、无 WNM 的 AP |
 
 - 单根全向天线没有方向信息，只能靠人走 + 热冷
 - 不同设备发射功率不同，跨设备 RSSI 不可比
 - 目标必须发帧；完全静默的设备无法定位
 - 目标如果使用随机 MAC，OUI 会显示 `LOCAL ADMIN`
+- 时间同步依赖 2.4G AP 广播 IE 69/98；5G-only SSID、未开启 WNM 的 AP 不会提供时间
 - `RSSI` 受人体、墙体、多径影响，建议看趋势，不要看单帧
 
 ---

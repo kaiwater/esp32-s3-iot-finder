@@ -345,7 +345,7 @@ static void draw_mac_line(const finder_view_t *v)
     }
 }
 
-static void draw_finder_page(const finder_view_t *v)
+static void draw_finder_page(const finder_view_t *v, const wnm_clock_view_t *c)
 {
     char buf[96], tmp[64];
     bool have_rssi = v->have_rssi;
@@ -354,10 +354,25 @@ static void draw_finder_page(const finder_view_t *v)
 
     text3x5(2, 2, "IOT FIND", 2, COL_TEXT);
     text3x5(128, 2, "2.4G", 1, COL_DIM);
-    char clk[16];
-    service_clock(clk, sizeof(clk), false);
-    text3x5(114, 7, "UP", 1, COL_DIM);
-    text2x5(124, 7, clk, 1, COL_DIM);
+    char clk[16], lab[8];
+    const char *label = "UP";
+    uint16_t clock_col = COL_DIM;
+    if (c && c->synced) {
+        snprintf(clk, sizeof(clk), "%02u:%02u", c->hour, c->min);
+        if (c->has_tz && c->tz_name[0]) {
+            label = strlen(c->tz_name) <= 3 ? c->tz_name : "LOC";
+        } else {
+            label = "UTC";
+        }
+        clock_col = COL_ACCENT;
+    } else {
+        service_clock(clk, sizeof(clk), false);
+    }
+    fit_text(lab, sizeof(lab), label);
+    lab[3] = 0;
+    if (!lab[0]) snprintf(lab, sizeof(lab), "UTC");
+    text3x5(110, 7, lab, 1, clock_col);
+    text2x5(126, 7, clk, 1, clock_col);
     rect(0, 12, WIDTH, 1, COL_DARK);
 
     draw_mac_line(v);
@@ -469,9 +484,9 @@ static void draw_finder_page(const finder_view_t *v)
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
 }
 
-static void draw_info_page(const finder_view_t *v)
+static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
 {
-    char buf[96], tmp[64], mac[18], clk[16], pk[8];
+    char buf[96], tmp[64], mac[18], pk[8];
 
     clear_panel();
 
@@ -528,9 +543,16 @@ static void draw_info_page(const finder_view_t *v)
              v->nrf_ok ? "OK" : "--", v->nrf_duty);
     text3x5(2, 66, buf, 1, COL_TEXT);
 
-    snprintf(buf, sizeof(buf), "WIFI %s  TARGET %s", v->wifi_ok ? "OK" : "FAIL",
-             v->have_target ? "SET" : "NONE");
-    text3x5(2, 73, buf, 1, COL_TEXT);
+    if (c && c->synced) {
+        snprintf(buf, sizeof(buf), "TIME %04u-%02u-%02u %02u:%02u:%02u",
+                 c->year, c->month, c->day, c->hour, c->min, c->sec);
+        text3x5(2, 73, buf, 1, COL_TEXT);
+        fit_text(tmp, sizeof(tmp), (c->has_tz && c->tz_name[0]) ? c->tz_name : "UTC");
+        tmp[4] = 0;
+        text3x5(102, 73, tmp, 1, COL_DIM);
+    } else {
+        text3x5(2, 73, "TIME WAITING FOR AP", 1, COL_DIM);
+    }
 
     text3x5(2, 82, "K1 SHORT = LOCK / HOP", 1, COL_DIM);
     text3x5(2, 89, "K1 HOLD  = NEXT CHANNEL", 1, COL_DIM);
@@ -538,21 +560,24 @@ static void draw_info_page(const finder_view_t *v)
     text3x5(2, 103, "K3 SHORT = NEXT CANDIDATE", 1, COL_DIM);
     text3x5(2, 110, "K3 HOLD  = CLEAR TARGET", 1, COL_DIM);
 
-    service_clock(clk, sizeof(clk), true);
-    text3x5(2, 119, "UP", 1, COL_DIM);
-    text2x5(14, 119, clk, 1, COL_ACCENT);
-    text3x5(48, 119, "K4 BACK", 1, COL_TEXT);
-    text3x5(88, 119, "HOLD=RST", 1, COL_DIM);
+    char src[16] = "--";
+    if (c && c->synced && c->have_source) {
+        snprintf(src, sizeof(src), "%02X:%02X:%02X", c->source[3], c->source[4], c->source[5]);
+    }
+    snprintf(buf, sizeof(buf), "SYNC %s", src);
+    text3x5(2, 119, buf, 1, (c && c->synced) ? COL_ACCENT : COL_DIM);
+    text3x5(60, 119, "K4 BACK", 1, COL_TEXT);
+    text3x5(96, 119, "HOLD=RST", 1, COL_DIM);
 
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
 }
 
-void st7735_draw_finder(const finder_view_t *v, int page)
+void st7735_draw_finder(const finder_view_t *v, const wnm_clock_view_t *c, int page)
 {
     if (!s_panel || !s_fb || !v) return;
-    if (page == 0) draw_finder_page(v);
-    else draw_info_page(v);
+    if (page == 0) draw_finder_page(v, c);
+    else draw_info_page(v, c);
 }
 
 static bool on_color_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *edata, void *ctx)

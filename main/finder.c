@@ -18,6 +18,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "oui.h"
+#include "wnm_clock.h"
 
 #define EVT_QUEUE_LEN 96
 #define CAND_TABLE_LEN 32
@@ -44,6 +45,15 @@ typedef struct {
     uint8_t ssid_len;
     uint8_t ds_ch;
     uint8_t ssid[FINDER_SSID_MAX];
+
+    uint8_t time_capab;
+    uint8_t time_value_len;
+    uint8_t time_value[10];
+    uint8_t tz_len;
+    uint8_t tz[40];
+    bool has_tsf;
+    uint64_t tsf;
+
     uint8_t addr1[6];
     uint8_t addr2[6];
     uint8_t addr3[6];
@@ -77,6 +87,14 @@ static volatile uint8_t s_rssi_i;
 static int8_t s_peak = -128;
 static char s_ssid_hint[FINDER_SSID_MAX];
 static uint8_t s_ssid_hint_len;
+
+/* Diagnostic counters for 802.11 WNM time elements. */
+static volatile uint32_t s_ie67_count;
+static volatile uint32_t s_ie69_count;
+static volatile uint32_t s_ie98_count;
+static uint8_t s_last_ie69[11];
+static uint8_t s_last_ie69_len;
+static char s_last_ie98[40];
 
 static volatile uint32_t s_learn_until;
 static uint32_t s_packets;
@@ -182,10 +200,14 @@ static void mac_text(const uint8_t *m, char out[18])
 }
 
 static void parse_ies(const uint8_t *p, int len, uint8_t *ssid,
-                      uint8_t *ssid_len, uint8_t *ds_ch)
+                      uint8_t *ssid_len, uint8_t *ds_ch,
+                      uint8_t *time_capab, uint8_t *time_value,
+                      uint8_t *time_value_len, uint8_t *tz, uint8_t *tz_len)
 {
     *ssid_len = 0;
     *ds_ch = 0;
+    *time_value_len = 0;
+    *tz_len = 0;
     while (len >= 2) {
         int id = p[0];
         int l = p[1];
@@ -195,6 +217,25 @@ static void parse_ies(const uint8_t *p, int len, uint8_t *ssid,
             *ssid_len = (uint8_t)l;
         } else if (id == 3 && l >= 1) {
             *ds_ch = p[2];
+        } else if (id == 67) {
+            s_ie67_count++;
+        } else if (id == 69 && l >= 11) {
+            /* Time Advertisement.  The 10-byte value follows the timing
+             * capabilities byte. */
+            s_ie69_count++;
+            *time_capab = p[2];
+            memcpy(time_value, p + 3, 10);
+            *time_value_len = 10;
+            s_last_ie69[0] = p[2];
+            memcpy(&s_last_ie69[1], p + 3, 10);
+            s_last_ie69_len = 11;
+        } else if (id == 98 && l > 0 && l < 40) {
+            s_ie98_count++;
+            memcpy(tz, p + 2, (size_t)l);
+            tz[l] = 0;
+            *tz_len = (uint8_t)l;
+            memcpy(s_last_ie98, p + 2, (size_t)l);
+            s_last_ie98[l] = 0;
         }
         p += 2 + l;
         len -= 2 + l;
@@ -336,7 +377,19 @@ static void sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 
     if (ftype == 0 && (subtype == 4 || subtype == 5 || subtype == 8)) {
         int off = (subtype == 4) ? 24 : 36;
-        if (len > off) parse_ies(f + off, len - off, ev.ssid, &ev.ssid_len, &ev.ds_ch);
+        if (len > off) {
+            parse_ies(f + off, len - off, ev.ssid, &ev.ssid_len, &ev.ds_ch,
+                      &ev.time_capab, ev.time_value, &ev.time_value_len,
+                      ev.tz, &ev.tz_len);
+        }
+        if ((subtype == 5 || subtype == 8) && len >= 36) {
+            uint64_t tsf = 0;
+            for (int i = 0; i < 8; i++) {
+                tsf |= (uint64_t)f[24 + i] << (8 * i);
+            }
+            ev.tsf = tsf;
+            ev.has_tsf = true;
+        }
         /* Beacon-flood frames carry no SSID and a DS channel that disagrees
          * with the receive channel.  Do not spend queue space on them. */
         if ((subtype == 5 || subtype == 8) && !ev.ssid_len && ev.ds_ch &&
@@ -462,7 +515,15 @@ static void drain_events(void)
         bool learn = s_learn_until != 0 && ev.ms < s_learn_until;
 
         if (ev.type == 0) {
-            if (ev.subtype == 8 || ev.subtype == 5) bss_update(&ev);
+            if (ev.subtype == 8 || ev.subtype == 5) {
+                bss_update(&ev);
+                if (ev.time_value_len == 10 && ev.time_capab == 2 && ev.has_tsf) {
+                    wnm_clock_set_utc(ev.time_value, ev.tsf, ev.addr3, ev.ms);
+                }
+                if (ev.tz_len) {
+                    wnm_clock_set_tz(ev.tz, ev.tz_len, ev.addr3);
+                }
+            }
 
             if (ev.subtype == 4) {
                 if (s_target_set && mac_eq(ev.addr2, s_target) && ev.ssid_len) {
@@ -785,6 +846,20 @@ void finder_next_candidate(void)
 
     finder_set_target(list[next].mac, "candidate");
     target_lock_channel(list[next].ch);
+}
+
+void finder_print_wnm(void)
+{
+    char hex[24] = "--";
+    if (s_last_ie69_len == 11) {
+        for (int i = 0; i < 11; i++) {
+            snprintf(hex + i * 2, 3, "%02X", s_last_ie69[i]);
+        }
+    }
+    ESP_LOGI(TAG, "WNM IE 67=%lu 69=%lu 98=%lu last69=%s tz='%s'",
+             (unsigned long)s_ie67_count, (unsigned long)s_ie69_count,
+             (unsigned long)s_ie98_count, hex,
+             s_last_ie98[0] ? s_last_ie98 : "--");
 }
 
 void finder_print_bss(void)

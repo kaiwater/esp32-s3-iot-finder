@@ -80,4 +80,5 @@ void finder_clear_peak(void);
 
 void finder_print_candidates(void);
 void finder_print_bss(void);
+void finder_print_wnm(void);
 void finder_toast(const char *fmt, ...);
