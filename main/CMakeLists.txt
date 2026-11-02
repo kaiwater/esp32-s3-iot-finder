@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "finder.c" "st7735.c" "nrf24.c" "nrf_aux.c" "oui.c" "wnm_clock.c"
+    SRCS "main.c" "finder.c" "st7735.c" "nrf24.c" "nrf_aux.c" "oui.c" "wnm_clock.c" "cjk_font.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_lcd

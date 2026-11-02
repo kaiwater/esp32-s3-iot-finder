@@ -7,6 +7,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "nvs.h"
 
 static const char *TAG = "wnm_clock";
 
@@ -40,7 +41,24 @@ typedef struct {
 typedef enum {
     TIME_MODE_DIRECT = 0, /* hostapd bug: Time Value is current UTC */
     TIME_MODE_TSF,        /* standard: Time Value is UTC at TSF 0 */
+    TIME_MODE_PERSIST,    /* stored UTC + TSF delta across finder reboots */
 } time_mode_t;
+
+#define TIME_ANCHOR_MAGIC 0x54494D45u /* 'TIME' */
+#define TIME_ANCHOR_VERSION 1
+#define TIME_ANCHOR_MAX_AGE_US (31536000ull * 1000000ull) /* 365 days */
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    uint8_t bssid[6];
+    uint8_t reserved2[2];
+    uint64_t tsf_us;
+    int64_t utc;
+    int64_t ad_base;
+    char tz[40];
+} stored_anchor_t;
 
 typedef struct {
     bool used;
@@ -65,9 +83,17 @@ static time_mode_t s_time_mode = TIME_MODE_DIRECT;
 static bool s_mode_locked;
 static time_sample_t s_samples[TIME_SAMPLES];
 
+static nvs_handle_t s_nvs;
+static bool s_nvs_ok;
+static bool s_stored_valid;
+static stored_anchor_t s_stored;
+static uint32_t s_stored_wait_ms;
+
 static bool s_has_tz;
 static tz_t s_tz;
 static char s_tz_text[40];
+
+static int64_t abs64(int64_t v);
 
 static uint32_t now_ms(void)
 {
@@ -263,6 +289,102 @@ static bool parse_tz(const char *text, tz_t *tz)
     return true;
 }
 
+static bool plausible_utc(int64_t t)
+{
+    return t >= 946684800LL && t <= 4102444800LL; /* 2000..2100 */
+}
+
+static void load_stored(void)
+{
+    s_stored_valid = false;
+    s_nvs_ok = false;
+    esp_err_t err = nvs_open("finder", NVS_READWRITE, &s_nvs);
+    if (err != ESP_OK) return;
+    s_nvs_ok = true;
+
+    stored_anchor_t rec;
+    size_t len = sizeof(rec);
+    if (nvs_get_blob(s_nvs, "time_anchor", &rec, &len) != ESP_OK ||
+        len != sizeof(rec)) return;
+    rec.tz[sizeof(rec.tz) - 1] = 0;
+    if (rec.magic != TIME_ANCHOR_MAGIC || rec.version != TIME_ANCHOR_VERSION) return;
+    if (!plausible_utc(rec.utc) || !plausible_utc(rec.ad_base)) return;
+    bool zero = true;
+    for (int i = 0; i < 6; i++) if (rec.bssid[i]) zero = false;
+    if (zero) return;
+
+    s_stored = rec;
+    s_stored_valid = true;
+    s_stored_wait_ms = now_ms() + 10000;
+    if (rec.tz[0]) {
+        tz_t parsed;
+        if (parse_tz(rec.tz, &parsed)) {
+            s_tz = parsed;
+            s_has_tz = true;
+            strncpy(s_tz_text, rec.tz, sizeof(s_tz_text) - 1);
+            s_tz_text[sizeof(s_tz_text) - 1] = 0;
+        }
+    }
+    ESP_LOGI(TAG, "stored anchor %02X:%02X:%02X:%02X:%02X:%02X tsf=%llu utc=%lld tz=%s",
+             rec.bssid[0], rec.bssid[1], rec.bssid[2],
+             rec.bssid[3], rec.bssid[4], rec.bssid[5],
+             (unsigned long long)rec.tsf_us, (long long)rec.utc,
+             rec.tz[0] ? rec.tz : "--");
+}
+
+static void invalidate_stored(void)
+{
+    s_stored_valid = false;
+    if (s_nvs_ok) {
+        nvs_erase_key(s_nvs, "time_anchor");
+        nvs_commit(s_nvs);
+    }
+}
+
+static void save_stored(const uint8_t source[6], int64_t ad_base,
+                        uint64_t tsf_us, int64_t utc_at_sample, bool force)
+{
+    if (!s_nvs_ok || !plausible_utc(utc_at_sample) || !plausible_utc(ad_base)) return;
+    bool zero = true;
+    for (int i = 0; i < 6; i++) if (source[i]) zero = false;
+    if (zero) return;
+
+    /* The stored UTC is advanced with the AP's TSF, so the record stays valid
+     * without periodic rewrites.  Only a new source or a rebuilt Time
+     * Advertisement needs a flash write. */
+    if (!force && s_stored_valid && memcmp(source, s_stored.bssid, 6) == 0 &&
+        abs64(ad_base - s_stored.ad_base) <= 2) {
+        return;
+    }
+
+    stored_anchor_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.magic = TIME_ANCHOR_MAGIC;
+    rec.version = TIME_ANCHOR_VERSION;
+    memcpy(rec.bssid, source, 6);
+    rec.tsf_us = tsf_us;
+    rec.utc = utc_at_sample;
+    rec.ad_base = ad_base;
+    if (s_has_tz) {
+        strncpy(rec.tz, s_tz_text, sizeof(rec.tz) - 1);
+        rec.tz[sizeof(rec.tz) - 1] = 0;
+    }
+
+    if (nvs_set_blob(s_nvs, "time_anchor", &rec, sizeof(rec)) != ESP_OK ||
+        nvs_commit(s_nvs) != ESP_OK) {
+        ESP_LOGW(TAG, "stored anchor save failed");
+        return;
+    }
+    s_stored = rec;
+    s_stored_valid = true;
+    if (force) {
+        ESP_LOGI(TAG, "stored anchor %02X:%02X:%02X:%02X:%02X:%02X tsf=%llu tz=%s",
+                 source[0], source[1], source[2], source[3], source[4], source[5],
+                 (unsigned long long)tsf_us,
+                 s_has_tz ? s_tz_text : "--");
+    }
+}
+
 static int rule_day(int year, int month, int week, int wday)
 {
     int first = weekday_from_days(days_from_civil(year, (unsigned)month, 1));
@@ -453,6 +575,7 @@ void wnm_clock_init(void)
     s_time_mode = TIME_MODE_DIRECT;
     s_mode_locked = false;
     memset(s_samples, 0, sizeof(s_samples));
+    load_stored();
 }
 
 void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
@@ -463,13 +586,93 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
 
     uint32_t now = now_ms();
     time_mode_t old_mode = s_time_mode;
+    bool first = !s_synced;
+    bool source_changed = !s_have_source || memcmp(source, s_source, 6) != 0;
+
     update_sample(source, base, tsf_us, mono_ms);
+
+    /* A cached Time Advertisement from a different AP may be hours old.  Once
+     * this finder already has a running clock, such an advert must not drag it
+     * backwards; the local timer keeps time until a genuinely fresh advert or
+     * the persisted BSS shows up again. */
+    bool stored_src = s_stored_valid && memcmp(source, s_stored.bssid, 6) == 0;
+    if (s_synced && !stored_src && s_time_mode != TIME_MODE_TSF) {
+        int64_t cur = current_utc(now);
+        bool same_src = s_have_anchor_source &&
+                        memcmp(source, s_anchor_source, 6) == 0;
+        if (!same_src && base < cur - 10) return;
+    }
+
+    /* On a cold boot give the persisted BSS a chance to appear before a
+     * different AP overwrites its record with a stale advertisement. */
+    if (s_stored_valid && !s_synced &&
+        memcmp(source, s_stored.bssid, 6) != 0 &&
+        (int32_t)(s_stored_wait_ms - now) > 0) {
+        return;
+    }
+
+    /* Another BSS with a much newer Time Advertisement is more useful than a
+     * persisted anchor from an older hostapd instance. */
+    bool fresh_other = s_stored_valid &&
+                       memcmp(source, s_stored.bssid, 6) != 0 &&
+                       base > s_stored.ad_base + 60;
+
+    /* Once a good DURABLE anchor exists for this BSSID, the beacon TSF is a
+     * better clock than the AP's cached Time Advertisement.  The TSF delta
+     * even covers the time the finder was powered off. */
+    if (!fresh_other && !s_mode_locked && s_stored_valid &&
+        memcmp(source, s_stored.bssid, 6) == 0) {
+        if (tsf_us >= s_stored.tsf_us &&
+            (tsf_us - s_stored.tsf_us) < TIME_ANCHOR_MAX_AGE_US) {
+            if (abs64(base - s_stored.ad_base) <= 2) {
+                int64_t derived = s_stored.utc +
+                                  (int64_t)((tsf_us - s_stored.tsf_us) / 1000000ull);
+                if (plausible_utc(derived)) {
+                    s_anchor_utc = derived;
+                    s_anchor_ms = mono_ms;
+                    s_anchor_base = base;
+                    s_anchor_source_ms = now;
+                    memcpy(s_anchor_source, source, 6);
+                    s_have_anchor_source = true;
+                    s_synced = true;
+                    memcpy(s_source, source, 6);
+                    s_have_source = true;
+                    s_time_mode = TIME_MODE_PERSIST;
+                    save_stored(source, base, tsf_us, derived, false);
+
+                    if (first || old_mode != TIME_MODE_PERSIST || source_changed) {
+                        int y;
+                        unsigned m, d;
+                        civil_from_days(derived / 86400, &y, &m, &d);
+                        int sod = (int)(derived % 86400);
+                        if (sod < 0) sod += 86400;
+                        ESP_LOGI(TAG, "UTC %04d-%02u-%02u %02u:%02u:%02u PERSIST from %02X:%02X:%02X:%02X:%02X:%02X",
+                                 y, m, d, sod / 3600, (sod / 60) % 60, sod % 60,
+                                 source[0], source[1], source[2],
+                                 source[3], source[4], source[5]);
+                    }
+                    return;
+                }
+            }
+        } else {
+            ESP_LOGW(TAG, "stored TSF went backwards; dropping anchor");
+            invalidate_stored();
+        }
+    }
+
+    /* If the persisted source is still alive, do not let a different AP's
+     * stale advertisement move the clock. */
+    if (!fresh_other && !s_mode_locked && s_time_mode == TIME_MODE_PERSIST &&
+        s_stored_valid && memcmp(source, s_stored.bssid, 6) != 0 &&
+        (uint32_t)(now - s_anchor_source_ms) < 15000) {
+        return;
+    }
+
     evaluate_mode(now);
     bool mode_changed = old_mode != s_time_mode;
     if (mode_changed) s_have_anchor_source = false;
 
     int64_t old_utc = current_utc(now);
-    bool first = !s_synced;
     bool same_anchor = s_have_anchor_source &&
                        memcmp(source, s_anchor_source, 6) == 0;
     bool anchor_stale = !s_have_anchor_source ||
@@ -477,8 +680,9 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
     bool fresher_direct = s_time_mode == TIME_MODE_DIRECT && !same_anchor &&
                           base > s_anchor_base + 5;
     bool switched_source = false;
+    bool use_anchor = same_anchor || anchor_stale || fresher_direct;
 
-    if (same_anchor || anchor_stale || fresher_direct) {
+    if (use_anchor) {
         if (!same_anchor) switched_source = true;
         memcpy(s_anchor_source, source, 6);
         s_have_anchor_source = true;
@@ -490,8 +694,6 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
             s_anchor_utc = base + (int64_t)(tsf_us / 1000000ull);
             s_anchor_ms = mono_ms;
         } else if (!same_anchor || abs64(base - s_anchor_base) > 5) {
-            /* hostapd builds this element once; keep the anchor and let the
-             * local monotonic clock advance it until the value really changes. */
             s_anchor_utc = base;
             s_anchor_ms = mono_ms;
             s_anchor_base = base;
@@ -500,6 +702,12 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
 
     s_synced = true;
     int64_t candidate = current_utc(now);
+    if (use_anchor) {
+        bool force = !s_stored_valid || switched_source ||
+                     abs64(base - s_stored.ad_base) > 2;
+        save_stored(source, base, tsf_us, current_utc(mono_ms), force);
+    }
+
     if (first || mode_changed || switched_source ||
         abs64(candidate - old_utc) > 5) {
         int y;
@@ -507,10 +715,12 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
         civil_from_days(candidate / 86400, &y, &m, &d);
         int sod = (int)(candidate % 86400);
         if (sod < 0) sod += 86400;
+        const char *mname = s_time_mode == TIME_MODE_TSF ? "TSF" :
+                            s_time_mode == TIME_MODE_PERSIST ? "PERSIST" : "DIRECT";
         ESP_LOGI(TAG, "UTC %04d-%02u-%02u %02u:%02u:%02u %s from %02X:%02X:%02X:%02X:%02X:%02X",
-                 y, m, d, sod / 3600, (sod / 60) % 60, sod % 60,
-                 s_time_mode == TIME_MODE_TSF ? "TSF" : "DIRECT",
-                 source[0], source[1], source[2], source[3], source[4], source[5]);
+                 y, m, d, sod / 3600, (sod / 60) % 60, sod % 60, mname,
+                 source[0], source[1], source[2],
+                 source[3], source[4], source[5]);
     }
 }
 
@@ -540,6 +750,29 @@ void wnm_clock_set_tz(const uint8_t *tz, uint8_t len, const uint8_t source[6])
     ESP_LOGI(TAG, "time zone '%s' offset %+ld min from %02X:%02X:%02X:%02X:%02X:%02X",
              text, (long)(parsed.std_off / 60),
              source[0], source[1], source[2], source[3], source[4], source[5]);
+
+    if (s_nvs_ok && s_stored_valid) {
+        strncpy(s_stored.tz, s_tz_text, sizeof(s_stored.tz) - 1);
+        s_stored.tz[sizeof(s_stored.tz) - 1] = 0;
+        if (nvs_set_blob(s_nvs, "time_anchor", &s_stored, sizeof(s_stored)) == ESP_OK) {
+            nvs_commit(s_nvs);
+        }
+    }
+}
+
+void wnm_clock_clear_anchor(void)
+{
+    invalidate_stored();
+    s_synced = false;
+    s_anchor_utc = 0;
+    s_anchor_ms = 0;
+    s_anchor_base = 0;
+    s_have_anchor_source = false;
+    s_have_source = false;
+    s_time_mode = TIME_MODE_DIRECT;
+    s_mode_locked = false;
+    memset(s_samples, 0, sizeof(s_samples));
+    ESP_LOGI(TAG, "time anchor cleared; waiting for a fresh advert");
 }
 
 void wnm_clock_set_mode(const char *mode)
@@ -600,6 +833,7 @@ void wnm_clock_poll(wnm_clock_view_t *v)
     v->age_ms = now - s_anchor_ms;
     v->have_source = s_have_source;
     v->tsf_mode = (s_time_mode == TIME_MODE_TSF);
+    v->persisted = (s_time_mode == TIME_MODE_PERSIST);
     memcpy(v->source, s_source, 6);
 }
 

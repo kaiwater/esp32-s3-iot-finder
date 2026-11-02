@@ -54,11 +54,11 @@ Modes:
 |---|---|
 | `AUTO` | hop 1..13, 150ms per channel |
 | `LOCKED` | stay on `target_ch` |
-| `MANUAL` | stay on the channel selected with long K1 |
+| `MANUAL` | stay on the channel selected with long `>` / `<` |
 
 On a fresh target the firmware starts in `AUTO` with auto-lock enabled.  When a
 matching frame is heard, the channel is recorded and the mode switches to
-`LOCKED`.  A short K1 unlock disables auto-lock so the UI can actually hop.
+`LOCKED`.  A short `#` unlock disables auto-lock so the UI can actually hop.
 
 ## Candidate learning
 
@@ -71,7 +71,8 @@ Every management/data frame contributes a candidate from the STA address:
 The 32-entry table tracks frames, last seen, RSSI, channel and BSSID.  Learning
 scores candidates by `(rssi + 100) * 100 + min(frames, 99)`, so the strongest
 device wins with activity as a tie-breaker.  A candidate must be seen during
-the five-second window.
+the five-second window.  Short `>` / `<` move forward/backward through the
+recent candidates and lock to the selected candidate's channel.
 
 ## BSS/SSID cache
 
@@ -93,9 +94,61 @@ probe-request IE if the AP is not in the cache.
 
 ## Persistence
 
-Only the six-byte target MAC is stored, in NVS namespace `finder`, key `mac`.
-It is written only when the target changes and erased on clear.  There is no
-network stack connection and no telemetry.
+Two records live in the `finder` NVS namespace:
+
+- `mac` — the six-byte target MAC.  Written only when the target changes and
+  erased on clear.
+- `time_anchor` — a packed `(magic, version, BSSID, TSF, UTC, ad_base, TZ)`
+  record used by the WNM clock.
+
+The time anchor makes the clock survive a finder reboot even though hostapd
+caches its Time Advertisement:
+
+```
+utc_now = stored_utc + (tsf_now - stored_tsf) / 1e6
+```
+
+The TSF delta is only accepted when the AP's current TSF is not smaller than
+the stored one (an AP reboot invalidates the record).  The record is rewritten
+only when the source BSSID, Time Value, or time zone changes; there is no
+periodic flash churn.  After a sync, adverts from other APs that are older than
+the running clock are ignored, so a stale cached value cannot drag the display
+backwards; a `timeclear` serial command erases the anchor.
+
+There is no network connection and no telemetry.
+
+## UI and keys
+
+| Key | Short | Long |
+|---|---|---|
+| `>` (K1) | next candidate | next channel |
+| `<` (K2) | previous candidate | previous channel |
+| `#` (K3) | lock/hop, or learn when no target | learn 5 s |
+| `*` (K4) | menu / back | clear target |
+
+Pages are a small state machine: FINDER, MENU, INFO, SSID.  The menu contains
+learn, clear, peak clear, channel, SSID, info and reboot.  Inside a menu or a
+detail page `*` returns one level; inside the menu `#` executes the selected
+item.  The FINDER page stays on the green-on-dark PHO palette.
+
+## SSID encoding and CJK font
+
+An SSID is an arbitrary byte string.  The firmware:
+
+1. returns ASCII when every byte is < 0x80;
+2. validates UTF-8 first;
+3. falls back to GBK through a generated GBK->Unicode table;
+4. when both are valid, rejects a UTF-8 interpretation that decodes to an
+   implausible script (Hebrew/Greek/private use) while GBK decodes cleanly.
+
+Non-ASCII text is drawn from a 12x12 bitmap table for U+4E00-U+9FFF,
+U+3000-U+303F and U+FF00-U+FFEF, generated from Noto Sans CJK SC by
+`tools/gen-cjk-font.py`.  ASCII stays on the existing 8x8 font.  The FINDER line
+shows the encoding tag; `* -> SSID` opens a five-line detail page, and `#`
+switches between UTF8 and GBK when both interpretations are valid.
+
+The table costs about 0.5MB of flash, leaving roughly 28% free in the 2MB app
+partition.
 
 ## BSS Load
 
@@ -136,6 +189,14 @@ time, otherwise it falls back to `UP HH:MM` uptime.
 - `direct` keeps a stable anchor source so the display does not jump between APs
   with clocks a few seconds apart.  A source is replaced only when it is stale
   or its Time Value changes.
+- A persistent anchor (`(BSSID, TSF, UTC, ad_base, TZ)` in NVS) extends direct
+  mode across finder reboots; the elapsed time is recovered from the beacon TSF.
+  After the first sync, an advert older than the running clock is ignored, and
+  `timeclear` drops the anchor if the AP side changes drastically.
+- The stale-advert guard matters because 2.4GHz meshes/extenders expose several
+  BSSIDs whose hostapd instances cached their Time Advertisement at different
+  times; without the guard the display can jump backwards when it roams between
+  them.
 - IE **98** Time Zone contains a POSIX TZ string (`CST-8`,
   `CET-1CEST,M3.5.0,M10.5.0/3`, ...).  The parser handles the standard offset,
   optional DST offset, and `Mmonth.week.weekday` transition rules.
@@ -155,4 +216,6 @@ numeric font, so they fit without competing with the RSSI display.
 
 The display uses one 160x128 RGB565 framebuffer (40KB) in internal DMA RAM.  The
 event queue is 96 entries; the candidate and BSS tables are fixed arrays.  The
-app partition is 2MB, leaving ample room for the generated OUI table.
+CJK table is stored as `const` data in flash (about 511KB); the 2x5 and 3x5
+fonts are tiny lookup tables.  The app partition is 2MB, leaving about 28% free
+after the font tables and the generated OUI table.

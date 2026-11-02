@@ -790,16 +790,29 @@ void finder_toggle_lock(void)
     }
 }
 
-void finder_next_channel(void)
+static void step_channel(int dir)
 {
     xSemaphoreTake(s_api_lock, portMAX_DELAY);
-    s_manual_ch = (s_cur_ch >= CH_MAX) ? CH_MIN : (uint8_t)(s_cur_ch + 1);
+    int ch = (int)s_cur_ch + dir;
+    if (ch < CH_MIN) ch = CH_MAX;
+    if (ch > CH_MAX) ch = CH_MIN;
+    s_manual_ch = (uint8_t)ch;
     s_target_ch = s_manual_ch;
     s_mode = FINDER_CH_MANUAL;
     s_auto_lock = false;
     set_channel(s_manual_ch);
     xSemaphoreGive(s_api_lock);
     finder_toast("MANUAL CH %u", s_manual_ch);
+}
+
+void finder_next_channel(void)
+{
+    step_channel(1);
+}
+
+void finder_prev_channel(void)
+{
+    step_channel(-1);
 }
 
 void finder_clear_peak(void)
@@ -828,7 +841,7 @@ static void target_lock_channel(uint8_t ch)
     xSemaphoreGive(s_api_lock);
 }
 
-void finder_next_candidate(void)
+static void step_candidate(int dir)
 {
     pick_t list[CAND_TABLE_LEN];
     int n = 0;
@@ -861,18 +874,28 @@ void finder_next_candidate(void)
         }
     }
 
-    int next = 0;
+    int next = dir > 0 ? 0 : n - 1;
     if (s_target_set) {
         for (int i = 0; i < n; i++) {
             if (mac_eq(list[i].mac, s_target)) {
-                next = (i + 1) % n;
+                next = (i + dir + n) % n;
                 break;
             }
         }
     }
 
-    finder_set_target(list[next].mac, "candidate");
+    finder_set_target(list[next].mac, dir > 0 ? "next candidate" : "prev candidate");
     target_lock_channel(list[next].ch);
+}
+
+void finder_next_candidate(void)
+{
+    step_candidate(1);
+}
+
+void finder_prev_candidate(void)
+{
+    step_candidate(-1);
 }
 
 void finder_print_wnm(void)
@@ -1133,6 +1156,7 @@ void finder_poll(finder_view_t *v)
     if (v->have_bssid) memcpy(v->bssid, bssid, 6);
 
     v->have_ssid = false;
+    v->ssid_nonascii = false;
     v->ssid[0] = 0;
     v->have_ap_load = false;
     if (v->have_bssid) {
@@ -1141,6 +1165,9 @@ void finder_poll(finder_view_t *v)
             memcpy(v->ssid, b->ssid, b->ssid_len);
             v->ssid[b->ssid_len] = 0;
             v->have_ssid = true;
+            for (int i = 0; i < b->ssid_len; i++) {
+                if ((uint8_t)v->ssid[i] & 0x80) v->ssid_nonascii = true;
+            }
         }
         if (b && b->has_load) {
             v->have_ap_load = true;
@@ -1152,6 +1179,9 @@ void finder_poll(finder_view_t *v)
         memcpy(v->ssid, s_ssid_hint, s_ssid_hint_len);
         v->ssid[s_ssid_hint_len] = 0;
         v->have_ssid = true;
+        for (int i = 0; i < s_ssid_hint_len; i++) {
+            if ((uint8_t)v->ssid[i] & 0x80) v->ssid_nonascii = true;
+        }
     }
 
     v->vendor[0] = 0;

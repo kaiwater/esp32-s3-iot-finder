@@ -17,7 +17,7 @@ static const char *TAG = "iot-finder";
 static volatile int s_button_event;
 static finder_view_t s_view;
 static wnm_clock_view_t s_clock;
-static int s_page;
+static ui_state_t s_ui;
 
 static void button_task(void *arg)
 {
@@ -29,35 +29,95 @@ static void button_task(void *arg)
     }
 }
 
-static void handle_event(int b)
+static void menu_execute(void)
 {
-    switch (b) {
-    case 1:
-        finder_toggle_lock();
-        break;
-    case 11:
-        finder_next_channel();
-        break;
-    case 2:
-        finder_clear_peak();
-        break;
-    case 12:
+    switch (s_ui.menu_sel) {
+    case UI_MENU_LEARN:
         finder_start_learn();
+        s_ui.page = UI_PAGE_FIND;
         break;
-    case 3:
-        finder_next_candidate();
-        break;
-    case 13:
+    case UI_MENU_CLEAR:
         finder_clear_target();
+        s_ui.page = UI_PAGE_FIND;
         break;
-    case 4:
-        s_page = !s_page;
+    case UI_MENU_PEAK:
+        finder_clear_peak();
+        s_ui.page = UI_PAGE_FIND;
         break;
-    case 14:
+    case UI_MENU_CHAN:
+        if (s_view.have_target) finder_toggle_lock();
+        else finder_next_channel();
+        s_ui.page = UI_PAGE_FIND;
+        break;
+    case UI_MENU_SSID:
+        s_ui.ssid_enc = SSID_ENC_UNKNOWN;
+        s_ui.page = UI_PAGE_SSID;
+        break;
+    case UI_MENU_INFO:
+        s_ui.page = UI_PAGE_INFO;
+        break;
+    case UI_MENU_REBOOT:
         esp_restart();
         break;
     default:
         break;
+    }
+}
+
+static void handle_event(int b)
+{
+    if (s_ui.page == UI_PAGE_MENU) {
+        if (b == 1) {
+            s_ui.menu_sel = (s_ui.menu_sel + 1) % UI_MENU_COUNT;
+        } else if (b == 2) {
+            s_ui.menu_sel = (s_ui.menu_sel + UI_MENU_COUNT - 1) % UI_MENU_COUNT;
+        } else if (b == 3) {
+            menu_execute();
+        } else if (b == 4 || b == 14) {
+            s_ui.page = UI_PAGE_FIND;
+        }
+        return;
+    }
+
+    if (s_ui.page == UI_PAGE_SSID) {
+        if (b == 3) {
+            size_t n = strlen(s_view.ssid);
+            bool u8 = s_view.ssid_nonascii &&
+                      ssid_utf8_valid((const uint8_t *)s_view.ssid, n);
+            bool gbk = s_view.ssid_nonascii &&
+                       ssid_gbk_valid((const uint8_t *)s_view.ssid, n);
+            if (u8 && gbk) {
+                ssid_enc_t cur = ssid_detect((const uint8_t *)s_view.ssid, n);
+                s_ui.ssid_enc = (cur == SSID_ENC_UTF8) ? SSID_ENC_GBK : SSID_ENC_UTF8;
+            }
+        } else if (b == 4 || b == 14) {
+            s_ui.page = UI_PAGE_MENU;
+        }
+        return;
+    }
+
+    if (s_ui.page == UI_PAGE_INFO) {
+        if (b == 4 || b == 14) s_ui.page = UI_PAGE_MENU;
+        return;
+    }
+
+    /* FINDER */
+    switch (b) {
+    case 1: finder_next_candidate(); break;
+    case 2: finder_prev_candidate(); break;
+    case 3:
+        if (s_view.have_target) finder_toggle_lock();
+        else finder_start_learn();
+        break;
+    case 4:
+        s_ui.menu_sel = 0;
+        s_ui.page = UI_PAGE_MENU;
+        break;
+    case 11: finder_next_channel(); break;
+    case 12: finder_prev_channel(); break;
+    case 13: finder_start_learn(); break;
+    case 14: finder_clear_target(); break;
+    default: break;
     }
 }
 
@@ -68,8 +128,10 @@ static void print_help(void)
     ESP_LOGI("cli", "  clear                 remove target");
     ESP_LOGI("cli", "  learn                 start 5s learning");
     ESP_LOGI("cli", "  next                  select next candidate");
+    ESP_LOGI("cli", "  prev                  select previous candidate");
     ESP_LOGI("cli", "  lock                  toggle channel lock");
     ESP_LOGI("cli", "  chan                  manual next channel");
+    ESP_LOGI("cli", "  chprev                manual previous channel");
     ESP_LOGI("cli", "  peak                  clear peak");
     ESP_LOGI("cli", "  list                  print recent candidates");
     ESP_LOGI("cli", "  bss                   print recent BSSID/SSID");
@@ -77,6 +139,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  wnm                   print time-element counters");
     ESP_LOGI("cli", "  tz CST-8              manual POSIX time zone fallback");
     ESP_LOGI("cli", "  timemode auto|hostapd|standard   Time Value interpretation");
+    ESP_LOGI("cli", "  timeclear             erase the persisted UTC/TSF anchor");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
 }
@@ -97,7 +160,8 @@ static void print_clock(void)
              s_clock.year, s_clock.month, s_clock.day, s_clock.hour, s_clock.min,
              s_clock.sec, s_clock.tz_name[0] ? s_clock.tz_name : "UTC",
              (long)s_clock.offset_sec, (unsigned long)s_clock.age_ms, src,
-             s_clock.tsf_mode ? "tsf" : "direct");
+             s_clock.persisted ? "persist" :
+             (s_clock.tsf_mode ? "tsf" : "direct"));
 }
 
 static void print_status(void)
@@ -149,10 +213,14 @@ static void handle_line(char *line)
         finder_start_learn();
     } else if (!strcmp(line, "next")) {
         finder_next_candidate();
+    } else if (!strcmp(line, "prev")) {
+        finder_prev_candidate();
     } else if (!strcmp(line, "lock")) {
         finder_toggle_lock();
     } else if (!strcmp(line, "chan")) {
         finder_next_channel();
+    } else if (!strcmp(line, "chprev")) {
+        finder_prev_channel();
     } else if (!strcmp(line, "peak")) {
         finder_clear_peak();
     } else if (!strcmp(line, "list") || !strcmp(line, "cand")) {
@@ -168,6 +236,8 @@ static void handle_line(char *line)
     } else if (!strncmp(line, "tz ", 3)) {
         const char *arg = line + 3;
         wnm_clock_set_tz((const uint8_t *)arg, (uint8_t)strlen(arg), NULL);
+    } else if (!strcmp(line, "timeclear")) {
+        wnm_clock_clear_anchor();
     } else if (!strncmp(line, "timemode ", 9)) {
         wnm_clock_set_mode(line + 9);
     } else if (!strcmp(line, "reboot")) {
@@ -235,7 +305,10 @@ void app_main(void)
     s_view.wifi_ok = finder_init();
     wnm_clock_init();
     wnm_clock_poll(&s_clock);
-    st7735_draw_finder(&s_view, &s_clock, 0);
+    memset(&s_ui, 0, sizeof(s_ui));
+    s_ui.page = UI_PAGE_FIND;
+    s_ui.ssid_enc = SSID_ENC_UNKNOWN;
+    st7735_draw_finder(&s_view, &s_clock, &s_ui);
 
     nrf_aux_start();
     xTaskCreatePinnedToCore(button_task, "buttons", 2048, NULL, 2, NULL, 1);
@@ -262,7 +335,7 @@ void app_main(void)
         if (now - last_draw >= 100) {
             last_draw = now;
             wnm_clock_poll(&s_clock);
-            st7735_draw_finder(&s_view, &s_clock, s_page);
+            st7735_draw_finder(&s_view, &s_clock, &s_ui);
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));

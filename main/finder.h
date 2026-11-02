@@ -52,6 +52,7 @@ typedef struct {
     uint8_t ap_load;       /* raw 802.11 channel utilization 0..255 */
     uint16_t ap_sta_count;
     bool have_ssid;
+    bool ssid_nonascii;
     char ssid[FINDER_SSID_MAX];
     char vendor[FINDER_VENDOR_MAX];
 
@@ -76,9 +77,11 @@ bool finder_set_target(const uint8_t mac[6], const char *why);
 bool finder_set_target_str(const char *text);
 void finder_clear_target(void);
 void finder_next_candidate(void);
+void finder_prev_candidate(void);
 void finder_start_learn(void);
 void finder_toggle_lock(void);
 void finder_next_channel(void);
+void finder_prev_channel(void);
 void finder_clear_peak(void);
 
 void finder_print_candidates(void);
