@@ -108,7 +108,7 @@ static void scan_store(int ch, uint8_t pct)
 
 static void try_second_radio(void)
 {
-    if (!s_ok || s_ok2 || s_scan) return;
+    if (!s_ok || s_ok2) return;
 
     static nrf_t cand;
     static int next;
@@ -145,7 +145,7 @@ static void nrf_aux_task(void *arg)
             s_ok = true;
         }
 
-        if (!s_scan && !s_ok2) {
+        if (!s_ok2) {
             uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
             if ((uint32_t)(now - s_last_second_try_ms) >= 5000) {
                 s_last_second_try_ms = now;
