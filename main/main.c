@@ -30,6 +30,16 @@ static void button_task(void *arg)
     }
 }
 
+static void ssid_enc_cycle(void)
+{
+    if (s_ui.ssid_enc == SSID_ENC_UNKNOWN) s_ui.ssid_enc = SSID_ENC_UTF8;
+    else if (s_ui.ssid_enc == SSID_ENC_UTF8) s_ui.ssid_enc = SSID_ENC_GBK;
+    else s_ui.ssid_enc = SSID_ENC_UNKNOWN;
+    finder_toast("SSID %s",
+                 s_ui.ssid_enc == SSID_ENC_UTF8 ? "UTF8" :
+                 s_ui.ssid_enc == SSID_ENC_GBK ? "GBK" : "AUTO");
+}
+
 static void ap_refresh(void)
 {
     s_ui.ap_count = finder_snapshot_aps(s_ui.aps, FINDER_AP_MAX);
@@ -115,6 +125,10 @@ static void menu_execute(void)
     case UI_MENU_SSID:
         ap_list_open();
         break;
+    case UI_MENU_RFSCAN:
+        nrf_aux_scan(true);
+        s_ui.page = UI_PAGE_RF_SCAN;
+        break;
     case UI_MENU_INFO:
         s_ui.page = UI_PAGE_INFO;
         break;
@@ -128,9 +142,20 @@ static void menu_execute(void)
 
 static void handle_event(int b)
 {
+    if (s_ui.page == UI_PAGE_RF_SCAN) {
+        if (b == 3) {
+            nrf_aux_scan(true); /* restart / clear peaks */
+        } else if (b == 4 || b == 14) {
+            nrf_aux_scan(false);
+            s_ui.page = UI_PAGE_MENU;
+        }
+        return;
+    }
+
     if (s_ui.page == UI_PAGE_AP_LIST) {
         if (b == 1) ap_move(1);
         else if (b == 2) ap_move(-1);
+        else if (b == 13) ssid_enc_cycle();
         else if (b == 3) {
             if (s_ui.ap_count > 0) s_ui.page = UI_PAGE_AP_DETAIL;
         } else if (b == 4 || b == 14) {
@@ -142,6 +167,7 @@ static void handle_event(int b)
     if (s_ui.page == UI_PAGE_AP_DETAIL) {
         if (b == 1) ap_move(1);
         else if (b == 2) ap_move(-1);
+        else if (b == 13) ssid_enc_cycle();
         else if (b == 3) {
             ap_sta_refresh();
             s_ui.page = UI_PAGE_AP_STAS;
@@ -154,6 +180,7 @@ static void handle_event(int b)
     if (s_ui.page == UI_PAGE_AP_STAS) {
         if (b == 1) sta_move(1);
         else if (b == 2) sta_move(-1);
+        else if (b == 13) ssid_enc_cycle();
         else if (b == 3) {
             if (s_ui.sta_count > 0 && s_ui.sta_sel >= 0 &&
                 s_ui.sta_sel < s_ui.sta_count) {
@@ -243,7 +270,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  tz CST-8              manual POSIX time zone fallback");
     ESP_LOGI("cli", "  timemode auto|hostapd|standard   Time Value interpretation");
     ESP_LOGI("cli", "  timeclear             erase the persisted UTC/TSF anchor");
-    ESP_LOGI("cli", "  ui ap|detail|stas|find  jump to a UI page (debug)");
+    ESP_LOGI("cli", "  ui ap|detail|stas|rf|find  jump to a UI page (debug)");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
 }
@@ -344,12 +371,16 @@ static void handle_line(char *line)
         wnm_clock_set_tz((const uint8_t *)arg, (uint8_t)strlen(arg), NULL);
     } else if (!strncmp(line, "ui ", 3)) {
         const char *arg = line + 3;
+        if (strcmp(arg, "rf") != 0) nrf_aux_scan(false);
         if (!strcmp(arg, "ap")) ap_list_open();
         else if (!strcmp(arg, "detail")) {
             if (s_ui.ap_count > 0) s_ui.page = UI_PAGE_AP_DETAIL;
         } else if (!strcmp(arg, "stas")) {
             ap_sta_refresh();
             s_ui.page = UI_PAGE_AP_STAS;
+        } else if (!strcmp(arg, "rf")) {
+            nrf_aux_scan(true);
+            s_ui.page = UI_PAGE_RF_SCAN;
         } else if (!strcmp(arg, "menu")) {
             s_ui.page = UI_PAGE_MENU;
         } else if (!strcmp(arg, "find")) {

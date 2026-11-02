@@ -17,6 +17,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "cjk_font.h"
 #include "oui.h"
 #include "wnm_clock.h"
 
@@ -1063,6 +1064,16 @@ int finder_snapshot_aps(finder_ap_t *out, int max)
         a->channel = b->channel;
         a->rssi = b->rssi;
         a->hidden = b->ssid_len == 0;
+        a->binary = false;
+        for (int k = 0; k < b->ssid_len; k++) {
+            uint8_t c = (uint8_t)b->ssid[k];
+            if (c < 0x20 || c == 0x7f) a->binary = true;
+        }
+        if (b->ssid_len &&
+            ssid_detect((const uint8_t *)b->ssid, b->ssid_len) ==
+                SSID_ENC_UNKNOWN) {
+            a->binary = true;
+        }
         a->has_load = b->has_load;
         a->load_sta = b->load_sta;
         a->load_util = b->load_util;

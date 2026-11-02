@@ -46,8 +46,9 @@
 - 屏幕：ST7735 **160x128**，SPI2
 - NRF：SPI3，只使用 RPD 位，**不参与 MAC 识别**
 - NRF 是可选的；没有 NRF 时界面显示 `RF --`，Wi-Fi 定位照常工作
-- NRF 启动会延迟 2.5 秒，并对 17/38、18/39、21/40 多轮重试；
-  识别成功后 INFO 页显示 `RF OK C<CSN> <duty>%`，串口 `status` 显示 `csn=...`
+- NRF 启动会延迟 3 秒，并对 17/38、18/39、21/40 做 6 轮重试；
+  每组做 6 次寄存器回读，SPI 降到 1MHz，失败后每 3 秒重试
+- 识别成功后 INFO 页显示 `RF OK C<CSN> <duty>%`，串口 `status` 显示 `csn=...`
 
 > 只支持 2.4GHz。5.8GHz 图传、5GHz Wi-Fi、大多数 FPV 模拟/数字图传这套硬件看不到。
 
@@ -92,7 +93,7 @@ idf.py -p /dev/cu.usbserial-XXXX flash
 - **候选**：短按 `>` / `<`，在最近 60 秒出现过的 STA 里前后切换
 
 `*` 打开菜单，`>` / `<` 移动，`#` 确认，`*` 返回。菜单项：
-`LEARN TARGET`、`CLEAR TARGET`、`PEAK CLEAR`、`CHAN`、`SSID`、`INFO`、`REBOOT`。
+`LEARN TARGET`、`CLEAR TARGET`、`PEAK CLEAR`、`CHAN`、`AP LIST`、`RF SCAN`、`INFO`、`REBOOT`。
 
 学习模式会在屏幕上显示倒计时和当前最佳候选。
 候选目标切换后会重新开始统计。
@@ -146,7 +147,7 @@ wnm                     打印 IE 67/69/98 计数
 tz CST-8                手动设置 POSIX 时区（兜底）
 timemode auto|direct|standard  选择 Time Value 解释方式
 timeclear               清除持久化 UTC/TSF 锚点并重新等待时间
-ui ap|detail|stas|find  调试：直接跳到 AP LIST / AP DETAIL / STA LIST / FINDER 页
+ui ap|detail|stas|rf|find  调试：直接跳到 AP LIST / AP DETAIL / STA LIST / RF SCAN / FINDER
 status                  打印当前状态
 reboot                  重启
 help                    帮助
@@ -190,6 +191,9 @@ help                    帮助
 - AP 详情显示 SSID、BSSID、厂商、信道、BSS Load、已见 STA 数
 - STA 列表显示 MAC、RSSI、厂商/probe SSID、最近出现；`#` 设为临时目标，`*` 返回
 - 设为目标不会锁信道；回到 FINDER 后再按 `#` 才锁定
+- AP 页右上角显示编码策略 `AUTO / U8 / GBK`；长按 `#` 循环切换，用来纠正 GBK/UTF-8 误判
+- 二进制/控制字符 SSID 不再硬画：列表显示 `<AABBCC>`，详情标 `BINARY`
+- 隐藏 SSID 显示 `<AABBCC>`，详情标 `HIDDEN`
 - 隐藏 SSID 显示 `SSID HIDDEN / AP ADVERTISES NO SSID`，BSSID 保留，可用 `stas` 按 AP 分组
 - 完全听不到 AP Beacon 才显示 `NO SSID / AP BEACON NOT HEARD`
 

@@ -6,6 +6,8 @@
  */
 #include "st7735.h"
 
+#include "nrf_aux.h"
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -496,17 +498,21 @@ static int draw_ssid_line(int x, int y, const char *text, ssid_enc_t enc,
     return x;
 }
 
-static ssid_enc_t ap_ssid_enc(const finder_ap_t *a)
+static ssid_enc_t ap_ssid_enc(const finder_ap_t *a, ssid_enc_t pref)
 {
-    if (!a->ssid_len) return SSID_ENC_ASCII;
+    if (!a->ssid_len || a->binary) return SSID_ENC_ASCII;
     size_t n = strlen(a->ssid);
     if (!n) return SSID_ENC_ASCII;
+    if (pref == SSID_ENC_UTF8 && ssid_utf8_valid((const uint8_t *)a->ssid, n))
+        return SSID_ENC_UTF8;
+    if (pref == SSID_ENC_GBK && ssid_gbk_valid((const uint8_t *)a->ssid, n))
+        return SSID_ENC_GBK;
     return ssid_detect((const uint8_t *)a->ssid, n);
 }
 
 static void ap_name(const finder_ap_t *a, char *out, size_t n)
 {
-    if (a->hidden) {
+    if (a->hidden || a->binary) {
         snprintf(out, n, "<%02X%02X%02X>",
                  a->bssid[3], a->bssid[4], a->bssid[5]);
     } else {
@@ -527,6 +533,9 @@ static void draw_ap_list_page(const ui_state_t *ui)
 
     clear_panel();
     text3x5(2, 2, "AP LIST", 2, COL_ACCENT);
+    const char *etag = ui->ssid_enc == SSID_ENC_UTF8 ? "U8" :
+                       ui->ssid_enc == SSID_ENC_GBK ? "GBK" : "AUTO";
+    text3x5(96, 3, etag, 1, COL_DIM);
     snprintf(buf, sizeof(buf), "%d AP", ui->ap_count);
     text3x5(126, 3, buf, 1, COL_DIM);
     rect(0, 12, WIDTH, 1, COL_DARK);
@@ -547,10 +556,10 @@ static void draw_ap_list_page(const ui_state_t *ui)
             text3x5(2, y + 4, buf, 1, sel ? COL_ACCENT : COL_DIM);
 
             ap_name(a, name, sizeof(name));
-            if (a->hidden) {
+            if (a->hidden || a->binary) {
                 text3x5(24, y + 4, name, 1, sel ? COL_ACCENT : COL_DIM);
             } else {
-                draw_ssid_line(24, y, a->ssid, ap_ssid_enc(a), 128,
+                draw_ssid_line(24, y, a->ssid, ap_ssid_enc(a, ui->ssid_enc), 128,
                                sel ? COL_ACCENT : COL_TEXT);
             }
 
@@ -576,6 +585,9 @@ static void draw_ap_detail_page(const ui_state_t *ui)
 
     clear_panel();
     text3x5(2, 2, "AP DETAIL", 2, COL_ACCENT);
+    const char *etag = ui->ssid_enc == SSID_ENC_UTF8 ? "U8" :
+                       ui->ssid_enc == SSID_ENC_GBK ? "GBK" : "AUTO";
+    text3x5(100, 3, etag, 1, COL_DIM);
     rect(0, 12, WIDTH, 1, COL_DARK);
 
     if (!a) {
@@ -586,12 +598,12 @@ static void draw_ap_detail_page(const ui_state_t *ui)
         return;
     }
 
-    if (a->hidden) {
+    if (a->hidden || a->binary) {
         ap_name(a, name, sizeof(name));
         text3x5(2, 14, name, 2, COL_WARN);
-        text3x5(100, 19, "HIDDEN", 1, COL_WARN);
+        text3x5(100, 19, a->hidden ? "HIDDEN" : "BINARY", 1, COL_WARN);
     } else {
-        draw_ssid_line(2, 14, a->ssid, ap_ssid_enc(a), 156, COL_TEXT);
+        draw_ssid_line(2, 14, a->ssid, ap_ssid_enc(a, ui->ssid_enc), 156, COL_TEXT);
     }
 
     mac_text(a->bssid, mac);
@@ -644,16 +656,19 @@ static void draw_sta_list_page(const ui_state_t *ui)
 
     clear_panel();
     text3x5(2, 2, "STA LIST", 2, COL_ACCENT);
+    const char *etag = ui->ssid_enc == SSID_ENC_UTF8 ? "U8" :
+                       ui->ssid_enc == SSID_ENC_GBK ? "GBK" : "AUTO";
+    text3x5(96, 3, etag, 1, COL_DIM);
     snprintf(buf, sizeof(buf), "%d STA", ui->sta_count);
     text3x5(126, 3, buf, 1, COL_DIM);
     rect(0, 12, WIDTH, 1, COL_DARK);
 
     if (a) {
-        if (a->hidden) {
+        if (a->hidden || a->binary) {
             ap_name(a, name, sizeof(name));
             text3x5(2, 14, name, 1, COL_WARN);
         } else {
-            draw_ssid_line(2, 13, a->ssid, ap_ssid_enc(a), 132, COL_DIM);
+            draw_ssid_line(2, 13, a->ssid, ap_ssid_enc(a, ui->ssid_enc), 132, COL_DIM);
         }
         mac_text(a->bssid, mac);
         snprintf(buf, sizeof(buf), "AP %s", mac);
@@ -706,6 +721,7 @@ static void menu_label(int item, const finder_view_t *v, char *out, size_t n)
         snprintf(out, n, "CHAN %s", mode_name(v->chan_mode));
         break;
     case UI_MENU_SSID: snprintf(out, n, "AP LIST"); break;
+    case UI_MENU_RFSCAN: snprintf(out, n, "RF SCAN"); break;
     case UI_MENU_INFO: snprintf(out, n, "INFO"); break;
     case UI_MENU_REBOOT: snprintf(out, n, "REBOOT"); break;
     default: snprintf(out, n, "--"); break;
@@ -724,7 +740,7 @@ static void draw_menu_page(const finder_view_t *v, const ui_state_t *ui)
     rect(0, 12, WIDTH, 1, COL_DARK);
 
     for (int i = 0; i < UI_MENU_COUNT; i++) {
-        int y = 20 + i * 13;
+        int y = 20 + i * 12;
         if (i == sel) {
             rect(0, y - 2, WIDTH, 13, COL_DARK);
             text3x5(4, y, ">", 2, COL_ACCENT);
@@ -735,6 +751,64 @@ static void draw_menu_page(const finder_view_t *v, const ui_state_t *ui)
 
     text3x5(2, 119, "> < MOVE  # SELECT  * BACK", 1, COL_DIM);
 
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+}
+
+static void draw_rf_scan_page(const ui_state_t *ui)
+{
+    (void)ui;
+    nrf_scan_ch_t sc[NRF_SCAN_CHANNELS];
+    nrf_aux_scan_get(sc, NRF_SCAN_CHANNELS);
+
+    char buf[32];
+    clear_panel();
+    text3x5(2, 2, "RF SCAN", 2, COL_ACCENT);
+    if (nrf_aux_ok()) {
+        snprintf(buf, sizeof(buf), "C%d", nrf_aux_csn());
+        text3x5(126, 3, buf, 1, COL_ACCENT);
+    } else {
+        text3x5(118, 3, "NRF --", 1, COL_DIM);
+    }
+    rect(0, 12, WIDTH, 1, COL_DARK);
+
+    if (!nrf_aux_ok()) {
+        text3x5(4, 38, "NRF NOT FOUND", 1, COL_WARN);
+        text3x5(4, 46, "CHECK 3V3 / SPI / CSN", 1, COL_DIM);
+        text3x5(2, 119, "* BACK", 1, COL_ACCENT);
+        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+        if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+        return;
+    }
+
+    const int x0 = 8, bw = 8, gap = 3, top = 22, bottom = 100;
+    for (int ch = 0; ch < NRF_SCAN_CHANNELS; ch++) {
+        int x = x0 + ch * (bw + gap);
+        int peak = sc[ch].peak;
+        int avg = sc[ch].avg;
+        int h = bottom - top;
+
+        rect(x, top, bw, h, COL_DARK);
+        if (peak) {
+            int hp = h * peak / 100;
+            if (hp < 1) hp = 1;
+            uint16_t col = peak >= 80 ? COL_WARN :
+                           peak >= 40 ? COL_ACCENT : COL_DIM;
+            rect(x, bottom - hp, bw, hp, col);
+        }
+        if (avg) {
+            int ha = h * avg / 100;
+            if (ha < 1) ha = 1;
+            rect(x + 2, bottom - ha, bw - 4, ha, COL_DIM);
+        }
+
+        char num[4];
+        snprintf(num, sizeof(num), "%d", ch + 1);
+        text3x5(x + (ch < 9 ? 2 : 0), 104, num, 1, COL_DIM);
+    }
+
+    text3x5(2, 112, "BAR=PEAK INNER=AVG", 1, COL_DIM);
+    text3x5(2, 119, "# RESET  * BACK", 1, COL_ACCENT);
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
 }
@@ -998,6 +1072,7 @@ void st7735_draw_finder(const finder_view_t *v, const wnm_clock_view_t *c,
     case UI_PAGE_AP_LIST: draw_ap_list_page(ui); break;
     case UI_PAGE_AP_DETAIL: draw_ap_detail_page(ui); break;
     case UI_PAGE_AP_STAS: draw_sta_list_page(ui); break;
+    case UI_PAGE_RF_SCAN: draw_rf_scan_page(ui); break;
     case UI_PAGE_FIND:
     default: draw_finder_page(v, c); break;
     }

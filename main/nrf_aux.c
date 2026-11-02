@@ -1,5 +1,7 @@
 #include "nrf_aux.h"
 
+#include <string.h>
+
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
@@ -22,6 +24,10 @@ static bool s_bus_ready;
 static bool s_logged_found;
 static bool s_logged_lost;
 static uint32_t s_last_fail_ms;
+static volatile bool s_scan;
+static volatile uint32_t s_scan_cycles;
+static portMUX_TYPE s_scan_mux = portMUX_INITIALIZER_UNLOCKED;
+static nrf_scan_ch_t s_scan_data[NRF_SCAN_CHANNELS];
 static const int s_csn[NRF_MODULE_COUNT] = NRF_CSN_PINS;
 static const int s_ce[NRF_MODULE_COUNT] = NRF_CE_PINS;
 
@@ -44,7 +50,7 @@ static bool open_radio(void)
     }
     /* NRF24L01+ modules are slow to settle after power-up.  Probe every
      * CSN/CE pair several times with a short pause before giving up. */
-    for (int pass = 0; pass < 4; pass++) {
+    for (int pass = 0; pass < 6; pass++) {
         for (int i = 0; i < NRF_MODULE_COUNT; i++) {
             if (nrf_init(&s_radio, s_csn[i], s_ce[i])) {
                 if (!s_logged_found) {
@@ -54,7 +60,7 @@ static bool open_radio(void)
                 return true;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(150));
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
     return false;
 }
@@ -62,7 +68,7 @@ static bool open_radio(void)
 static void nrf_aux_task(void *arg)
 {
     (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(2500)); /* give the slow modules time to settle */
+    vTaskDelay(pdMS_TO_TICKS(3000)); /* give the slow modules time to settle */
 
     for (;;) {
         if (!s_ok) {
@@ -78,9 +84,32 @@ static void nrf_aux_task(void *arg)
             s_ok = true;
         }
 
+        if (s_scan) {
+            for (int ch = 1; ch <= NRF_SCAN_CHANNELS && s_scan; ch++) {
+                nrf_set_channel(&s_radio, wifi_to_rf((uint8_t)ch));
+                vTaskDelay(pdMS_TO_TICKS(5));
+                unsigned high = 0;
+                for (int i = 0; i < 16; i++) {
+                    if (nrf_read_reg(&s_radio, REG_RPD) & 1u) high++;
+                    esp_rom_delay_us(500);
+                }
+                uint8_t pct = (uint8_t)(high * 100u / 16u);
+                portENTER_CRITICAL(&s_scan_mux);
+                nrf_scan_ch_t *sc = &s_scan_data[ch - 1];
+                sc->last = pct;
+                if (pct > sc->peak) sc->peak = pct;
+                sc->avg = (uint8_t)((sc->avg * 3u + pct) / 4u);
+                portEXIT_CRITICAL(&s_scan_mux);
+            }
+            s_scan_cycles++;
+            s_duty = 0;
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
         uint8_t rf = wifi_to_rf(s_wifi_ch);
         nrf_set_channel(&s_radio, rf);
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(10));
 
         uint8_t got = 0;
         for (int attempt = 0; attempt < 4; attempt++) {
@@ -141,4 +170,34 @@ bool nrf_aux_ok(void)
 uint8_t nrf_aux_duty(void)
 {
     return s_duty;
+}
+
+void nrf_aux_scan(bool on)
+{
+    if (on) {
+        portENTER_CRITICAL(&s_scan_mux);
+        memset(s_scan_data, 0, sizeof(s_scan_data));
+        s_scan_cycles = 0;
+        portEXIT_CRITICAL(&s_scan_mux);
+    }
+    s_scan = on;
+}
+
+bool nrf_aux_scan_active(void)
+{
+    return s_scan;
+}
+
+void nrf_aux_scan_get(nrf_scan_ch_t *out, int max)
+{
+    if (!out || max <= 0) return;
+    if (max > NRF_SCAN_CHANNELS) max = NRF_SCAN_CHANNELS;
+    portENTER_CRITICAL(&s_scan_mux);
+    memcpy(out, s_scan_data, (size_t)max * sizeof(*out));
+    portEXIT_CRITICAL(&s_scan_mux);
+}
+
+uint32_t nrf_aux_scan_cycles(void)
+{
+    return s_scan_cycles;
 }

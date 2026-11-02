@@ -16,6 +16,7 @@ typedef struct {
     uint8_t channel;
     int8_t rssi;
     bool hidden;
+    bool binary;
     bool has_load;
     uint16_t load_sta;
     uint8_t load_util;

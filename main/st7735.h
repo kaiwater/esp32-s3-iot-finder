@@ -16,6 +16,7 @@ typedef enum {
     UI_PAGE_AP_LIST,
     UI_PAGE_AP_DETAIL,
     UI_PAGE_AP_STAS,
+    UI_PAGE_RF_SCAN,
 } ui_page_t;
 
 enum {
@@ -24,6 +25,7 @@ enum {
     UI_MENU_PEAK,
     UI_MENU_CHAN,
     UI_MENU_SSID,
+    UI_MENU_RFSCAN,
     UI_MENU_INFO,
     UI_MENU_REBOOT,
     UI_MENU_COUNT,

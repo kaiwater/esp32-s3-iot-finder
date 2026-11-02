@@ -10,3 +10,18 @@ void nrf_aux_set_channel(uint8_t wifi_channel);
 bool nrf_aux_ok(void);
 int nrf_aux_csn(void);
 uint8_t nrf_aux_duty(void);
+
+#define NRF_SCAN_CHANNELS 13
+
+typedef struct {
+    uint8_t peak; /* max RPD duty over the scan, 0..100 */
+    uint8_t avg;  /* smoothed RPD duty, 0..100 */
+    uint8_t last; /* latest RPD duty, 0..100 */
+} nrf_scan_ch_t;
+
+/* Channel-energy scan.  While active the NRF leaves the Wi-Fi channel and
+ * steps 1..13, holding the peak value per channel. */
+void nrf_aux_scan(bool on);
+bool nrf_aux_scan_active(void);
+void nrf_aux_scan_get(nrf_scan_ch_t *out, int max);
+uint32_t nrf_aux_scan_cycles(void);

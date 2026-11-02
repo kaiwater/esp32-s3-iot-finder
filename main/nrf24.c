@@ -122,7 +122,7 @@ bool nrf_init(nrf_t *n, int csn_pin, int ce_pin)
     n->ce_pin = ce_pin;
     if (n->spi == NULL) {
         const spi_device_interface_config_t dev = {
-            .clock_speed_hz = 2 * 1000 * 1000,
+            .clock_speed_hz = 1 * 1000 * 1000,
             .mode = 0,
             .spics_io_num = csn_pin,
             .queue_size = 1,
@@ -143,16 +143,20 @@ bool nrf_init(nrf_t *n, int csn_pin, int ce_pin)
     /* A missing module reads 0x00 or 0xFF.  Write two registers and read
      * them back.  The module can need a few ms after power-up, so retry. */
     bool ok = false;
-    for (int attempt = 0; attempt < 4; attempt++) {
+    for (int attempt = 0; attempt < 6; attempt++) {
+        /* Toggle PWR_UP; a module left in a bad state after a hot reset
+         * sometimes only answers after a power-down/power-up cycle. */
+        nrf_write_reg(n, REG_CONFIG, 0x0C);
+        vTaskDelay(pdMS_TO_TICKS(5));
         nrf_write_reg(n, REG_CONFIG, 0x0E);   /* EN_CRC, CRCO=2, PWR_UP */
         nrf_write_reg(n, REG_RF_CH, 0x4B);    /* temporary test value */
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(15));
         if (nrf_read_reg(n, REG_CONFIG) == 0x0E &&
             nrf_read_reg(n, REG_RF_CH) == 0x4B) {
             ok = true;
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(25));
     }
     if (!ok) {
         ESP_LOGW(TAG, "no NRF24L01 on CSN %d", csn_pin);

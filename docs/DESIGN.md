@@ -145,7 +145,7 @@ must be an explicit, opt-in command; the default stays passive.
 
 Pages are a small state machine: FINDER, MENU, INFO, AP LIST, AP DETAIL, STA
 LIST (and the older flat SSID page is kept for the target detail).  The menu
-contains learn, clear, peak clear, channel, AP LIST, info and reboot.  Inside
+contains learn, clear, peak clear, channel, AP LIST, RF SCAN, info and reboot.  Inside
 a list/detail page `>`/`<` moves the selection, `#` enters the selected item
 and `*` returns one level.  The AP list is sorted by associated STA count then
 RSSI, includes hidden APs under `<AABBCC>` names, and the STA list sets a
@@ -187,14 +187,26 @@ used for hot/cold decisions.
 
 ## NRF side channel
 
-One NRF24L01 is initialized opportunistically.  Startup waits 2.5 s, then
-probes every CSN/CE pair (17/38, 18/39, 21/40) four times with a 150 ms pause
-between passes, and each pair is read back four times.  Re-probing a different
+One NRF24L01 is initialized opportunistically.  Startup waits 3 s, then
+probes every CSN/CE pair (17/38, 18/39, 21/40) six times with a 200 ms pause
+between passes, and each pair is read back six times after a PWR_UP toggle.
+The SPI clock is 1MHz to tolerate long jumper wires.  Re-probing a different
 CSN removes and re-adds the SPI device, so the probe really tests that CSN.
 The task maps the current Wi-Fi channel to the NRF channel at the same centre
 frequency, samples RPD eight times, and publishes 0–100%.  The NRF runs
 independently and does not affect the Wi-Fi sniffer.  If no module is found,
 the UI shows `RF --`; when found, INFO shows `RF OK C<csn> <duty>%`.
+
+The RF SCAN page temporarily takes the NRF off the Wi-Fi channel and sweeps
+1..13.  Each channel gets 16 RPD samples (8 ms), and the peak is retained
+across sweeps until reset.  The screen draws the peak as the outer bar and the
+smoothed average as the inner bar, which is the useful view for a frequency
+hopper: a single visit to a channel leaves a visible peak.
+
+AP SSIDs are marked binary when they contain control bytes or are not valid
+UTF-8/GBK; those are drawn as `<AABBCC>` instead of attempting a lossy decode.
+The AP pages carry an `AUTO / U8 / GBK` tag and long `#` cycles the encoding
+preference for the rare byte sequence that is valid in both encodings.
 
 ## Service clock and WNM time
 
