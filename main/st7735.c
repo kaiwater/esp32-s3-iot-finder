@@ -54,11 +54,11 @@
 #define COL_WARN   RGB565(0xFF, 0xD0, 0x20)
 #define COL_ORANGE RGB565(0xFF, 0x70, 0x10)
 #define COL_RED    RGB565(0xFF, 0x30, 0x30)
-/* RF scan bars: dark red bed with a deep-orange peak column. */
-#define COL_RF_BG   RGB565(0x24, 0x04, 0x04)
-#define COL_RF_AVG  RGB565(0x70, 0x0C, 0x08)
-#define COL_RF_PEAK RGB565(0xFF, 0xD8, 0x00)
-#define COL_RF_HOT  RGB565(0xFF, 0xFF, 0x40)
+/* RF scan bars: original dark bed, yellow average, dark-red/deep-orange peak. */
+#define COL_RF_BG   COL_DARK
+#define COL_RF_AVG  RGB565(0xFF, 0xD8, 0x00)
+#define COL_RF_PEAK RGB565(0xA0, 0x10, 0x08)
+#define COL_RF_HOT  RGB565(0xE0, 0x40, 0x00)
 
 static const char *TAG = "st7735";
 static esp_lcd_panel_handle_t s_panel;
