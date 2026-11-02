@@ -191,8 +191,11 @@ Up to two NRF24L01 modules are initialized opportunistically.  Each CSN/CE
 pair gets its own `nrf_t` and SPI device, so probing CSN 18 does not keep
 talking to the device created for CSN 17.  Startup waits 3 s, then probes every
 pair (17/38, 18/39, 21/40) several times, and each pair is read back after a
-PWR_UP toggle.  The SPI clock is 1MHz to tolerate long jumper wires.  When two
-modules are present, INFO/status reports both CSNs.  Re-probing a different
+PWR_UP toggle.  The SPI clock is 1MHz to tolerate long jumper wires.  The second module is
+probed 600ms after the first is found so their power-up current is staggered;
+if it is still missing, a background hot-plug probe retries every 5s without
+resetting the working radio.  When two modules are present, INFO/status
+reports both CSNs.  Re-probing a different
 CSN removes and re-adds the SPI device, so the probe really tests that CSN.
 The task maps the current Wi-Fi channel to the NRF channel at the same centre
 frequency, samples RPD eight times, and publishes 0–100%.  The NRF runs

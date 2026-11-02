@@ -26,6 +26,7 @@ static bool s_bus_ready;
 static bool s_logged_found;
 static bool s_logged_lost;
 static uint32_t s_last_fail_ms;
+static uint32_t s_last_second_try_ms;
 static volatile bool s_scan;
 static volatile uint32_t s_scan_cycles;
 static portMUX_TYPE s_scan_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -63,6 +64,11 @@ static bool open_radio(void)
         for (int attempt = 0; attempt < 4; attempt++) {
             if (nrf_init(&cand[i], s_csn[i], s_ce[i])) {
                 found[nfound++] = cand[i];
+                if (nfound == 1 && i + 1 < NRF_MODULE_COUNT) {
+                    /* Stagger the second module's power-up so both do not
+                     * draw their startup current at the same instant. */
+                    vTaskDelay(pdMS_TO_TICKS(600));
+                }
                 break;
             }
             vTaskDelay(pdMS_TO_TICKS(200));
@@ -100,6 +106,26 @@ static void scan_store(int ch, uint8_t pct)
     portEXIT_CRITICAL(&s_scan_mux);
 }
 
+static void try_second_radio(void)
+{
+    if (!s_ok || s_ok2 || s_scan) return;
+
+    static nrf_t cand;
+    static int next;
+    for (int n = 0; n < NRF_MODULE_COUNT; n++) {
+        int i = next;
+        next = (next + 1) % NRF_MODULE_COUNT;
+        if (s_csn[i] == s_radio.csn_pin) continue;
+        if (nrf_init(&cand, s_csn[i], s_ce[i])) {
+            s_radio2 = cand;
+            s_ok2 = true;
+            ESP_LOGI(TAG, "NRF hot-plug CSN %d", s_csn[i]);
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
 static void nrf_aux_task(void *arg)
 {
     (void)arg;
@@ -117,6 +143,14 @@ static void nrf_aux_task(void *arg)
                 continue;
             }
             s_ok = true;
+        }
+
+        if (!s_scan && !s_ok2) {
+            uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+            if ((uint32_t)(now - s_last_second_try_ms) >= 5000) {
+                s_last_second_try_ms = now;
+                try_second_radio();
+            }
         }
 
         if (s_scan) {
