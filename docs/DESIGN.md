@@ -94,10 +94,12 @@ The target's BSSID is derived from its own frames:
 - IBSS: `addr3`
 
 The SSID shown on screen comes from that BSS entry, or from the target's own
-probe-request IE if the AP is not in the cache.  If neither source exists the
-screen keeps the BSSID and says `AP BEACON NOT HEARD`: a 2.4GHz sniffer cannot
-recover the SSID of a hidden/mesh AP, or of a 5GHz-only AP, from encrypted STA
-data frames.
+probe-request IE if the AP is not in the cache.  Beacons with an empty SSID are
+still stored as `<hidden>` (provided they carry a matching DS channel), so a
+STA can be grouped by a known hidden AP.  Only when no beacon for the BSSID was
+seen does the screen say `AP BEACON NOT HEARD`; a 2.4GHz sniffer cannot recover
+the SSID of a hidden/mesh AP, or of a 5GHz-only AP, from encrypted STA data
+frames.
 
 ## Persistence
 

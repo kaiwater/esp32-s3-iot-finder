@@ -438,9 +438,17 @@ static void draw_ssid_page(const finder_view_t *v, const ui_state_t *ui)
     text3x5(2, 23, buf, 1, COL_TEXT);
 
     if (!v->have_ssid || !n) {
-        text3x5(4, 40, "NO SSID", 2, COL_DIM);
-        text3x5(4, 58, v->have_bssid ? "AP BEACON NOT HEARD"
-                                     : "NO ASSOCIATED AP", 1, COL_DIM);
+        if (v->ssid_hidden) {
+            text3x5(4, 40, "SSID HIDDEN", 2, COL_WARN);
+            text3x5(4, 58, "AP ADVERTISES NO SSID", 1, COL_DIM);
+        } else if (v->bss_known) {
+            text3x5(4, 40, "SSID ?", 2, COL_DIM);
+            text3x5(4, 58, "AP HAS NO SSID", 1, COL_DIM);
+        } else {
+            text3x5(4, 40, "NO SSID", 2, COL_DIM);
+            text3x5(4, 58, v->have_bssid ? "AP BEACON NOT HEARD"
+                                         : "NO ASSOCIATED AP", 1, COL_DIM);
+        }
     } else {
         draw_ssid_text(v->ssid, enc, COL_TEXT);
     }
@@ -592,6 +600,10 @@ static void draw_finder_page(const finder_view_t *v, const wnm_clock_view_t *c)
             fit_text(tmp, sizeof(tmp), v->ssid);
             snprintf(buf, sizeof(buf), "SSID %s", tmp);
         }
+    } else if (v->ssid_hidden) {
+        snprintf(buf, sizeof(buf), "SSID <HIDDEN>  * MENU");
+    } else if (v->bss_known) {
+        snprintf(buf, sizeof(buf), "SSID ?  * MENU");
     } else {
         snprintf(buf, sizeof(buf), "SSID --");
     }
@@ -674,6 +686,10 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
             fit_text(tmp, sizeof(tmp), v->ssid);
             snprintf(buf, sizeof(buf), "SSID %s", tmp);
         }
+    } else if (v->ssid_hidden) {
+        snprintf(buf, sizeof(buf), "SSID <HIDDEN>  * MENU > SSID");
+    } else if (v->bss_known) {
+        snprintf(buf, sizeof(buf), "SSID ?  * MENU > SSID");
     } else {
         snprintf(buf, sizeof(buf), "SSID --");
     }

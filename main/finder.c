@@ -174,6 +174,8 @@ typedef struct {
     uint8_t ch;
     char ap_ssid[FINDER_SSID_MAX];
     uint8_t ap_ssid_len;
+    bool ap_known;
+    bool ap_hidden;
     char probe_ssid[FINDER_SSID_MAX];
     uint8_t probe_ssid_len;
 } dump_t;
@@ -441,9 +443,9 @@ static void bss_update(const snif_evt_t *ev)
     if (mac_group(ev->addr3) || mac_zero(ev->addr3)) return;
 
     /* A beacon flood has no SSID and often a DS channel that does not match
-     * the channel it was heard on.  Keep the table for real APs; the target's
-     * own frame still supplies a BSSID if its AP is hidden. */
-    if (!ev->ssid_len && !bss_find(ev->addr3)) return;
+     * the channel it was heard on.  Real hidden APs still carry a DS channel;
+     * keep them so a STA's BSSID can be resolved to a known (hidden) AP. */
+    if (!ev->ssid_len && !ev->ds_ch && !bss_find(ev->addr3)) return;
     if (ev->ds_ch && ev->ch && ev->ds_ch != ev->ch) return;
 
     bss_rec_t *r = bss_find(ev->addr3);
@@ -1013,8 +1015,14 @@ static void dump_candidate(dump_t *d, const cand_rec_t *c, uint32_t now)
     d->probe_ssid_len = 0;
     d->ap_ssid[0] = 0;
     d->probe_ssid[0] = 0;
+    d->ap_known = false;
+    d->ap_hidden = false;
 
     bss_rec_t *b = bss_find(c->bssid);
+    if (b) {
+        d->ap_known = true;
+        if (!b->ssid_len) d->ap_hidden = true;
+    }
     if (b && b->ssid_len) {
         memcpy(d->ap_ssid, b->ssid, b->ssid_len);
         d->ap_ssid[b->ssid_len] = 0;
@@ -1065,6 +1073,8 @@ void finder_print_candidates(void)
         char ssid[FINDER_SSID_MAX + 8];
         if (list[i].ap_ssid_len) {
             snprintf(ssid, sizeof(ssid), "SSID %s", list[i].ap_ssid);
+        } else if (list[i].ap_hidden) {
+            snprintf(ssid, sizeof(ssid), "SSID <hidden>");
         } else if (list[i].probe_ssid_len) {
             snprintf(ssid, sizeof(ssid), "probe %s", list[i].probe_ssid);
         } else {
@@ -1129,6 +1139,7 @@ void finder_print_stas_by_ap(void)
         char line[192];
         int off = snprintf(line, sizeof(line), "AP %s  ", ap);
         if (ssid) off += snprintf(line + off, sizeof(line) - off, "SSID %s", ssid);
+        else if (list[i].ap_hidden) off += snprintf(line + off, sizeof(line) - off, "SSID <hidden>");
         else if (probe) off += snprintf(line + off, sizeof(line) - off, "SSID -- probe %s", probe);
         else off += snprintf(line + off, sizeof(line) - off, "SSID --");
         off += snprintf(line + off, sizeof(line) - off, "  ch %u  %d STA",
@@ -1295,12 +1306,18 @@ void finder_poll(finder_view_t *v)
     if (v->have_bssid) memcpy(v->bssid, bssid, 6);
 
     v->have_ssid = false;
+    v->bss_known = false;
+    v->ssid_hidden = false;
     v->ssid_nonascii = false;
     v->ssid[0] = 0;
     v->have_ap_load = false;
     if (v->have_bssid &&
         xSemaphoreTake(s_tab_lock, portMAX_DELAY) == pdTRUE) {
         bss_rec_t *b = bss_find(v->bssid);
+        if (b) {
+            v->bss_known = true;
+            if (!b->ssid_len) v->ssid_hidden = true;
+        }
         if (b && b->ssid_len) {
             memcpy(v->ssid, b->ssid, b->ssid_len);
             v->ssid[b->ssid_len] = 0;

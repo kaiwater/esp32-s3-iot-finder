@@ -52,6 +52,8 @@ typedef struct {
     uint8_t ap_load;       /* raw 802.11 channel utilization 0..255 */
     uint16_t ap_sta_count;
     bool have_ssid;
+    bool bss_known;
+    bool ssid_hidden;
     bool ssid_nonascii;
     char ssid[FINDER_SSID_MAX];
     char vendor[FINDER_VENDOR_MAX];
