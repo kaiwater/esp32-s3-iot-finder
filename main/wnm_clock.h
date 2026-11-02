@@ -17,6 +17,7 @@ typedef struct {
     uint32_t age_ms;
     bool have_source;
     uint8_t source[6];
+    bool tsf_mode;
 } wnm_clock_view_t;
 
 void wnm_clock_init(void);
@@ -30,6 +31,7 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
 /* Time Zone element (98): POSIX TZ string, e.g. CST-8 or
  * CET-1CEST,M3.5.0,M10.5.0/3. */
 void wnm_clock_set_tz(const uint8_t *tz, uint8_t len, const uint8_t source[6]);
+void wnm_clock_set_mode(const char *mode);
 
 void wnm_clock_poll(wnm_clock_view_t *v);
 bool wnm_clock_synced(void);

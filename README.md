@@ -128,6 +128,7 @@ bss                     列出最近解析到的 BSSID / SSID
 clock                   打印 WNM 时间 / 时区
 wnm                     打印 IE 67/69/98 计数
 tz CST-8                手动设置 POSIX 时区（兜底）
+timemode auto|direct|standard  选择 Time Value 解释方式
 status                  打印当前状态
 reboot                  重启
 help                    帮助
@@ -173,8 +174,19 @@ help                    帮助
 - **IE 69 Time Advertisement**（注意：标准 ID 是 **69**，67 是 BSS AVB Admission Capacity）
 - **IE 98 Time Zone**（ASCII POSIX TZ 字符串，例如 `CST-8`、`CET-1CEST,M3.5.0,M10.5.0/3`）
 
-`time_advertisement=2` 的 10 字节 Time Value 是「TSF 为 0 时的 UTC 日历时间」，
-加上同一个 Beacon 的 8 字节 TSF 就得到当前 UTC。
+标准语义里，`time_advertisement=2` 的 10 字节 Time Value 是「TSF 为 0 时的 UTC
+日历时间」，加上同一个 Beacon 的 8 字节 TSF 就得到当前 UTC。
+
+但 **OpenWrt / hostapd 2.11 的实现有已知偏差**：它只在第一次构建时把「当前 UTC」
+填进去，并且源码里留着 `FIX: need to calculate this based on the current TSF value`
+注释；AP 运行久了这个值就是旧的。固件因此提供两种解释：
+
+- `direct`（OpenWrt/hostapd 默认）：Time Value 当锚点，本机单调时钟往前走，不再加 TSF
+- `tsf`（标准 802.11）：Time Value + TSF
+
+默认 `auto`：收集多个 BSS 的样本，比较两种解释的离散度，自动选择。
+也可以用 `timemode direct|standard` 手动指定。
+
 时区元素按 POSIX TZ 解析，支持标准偏移和 `M月.周.星期` 形式的 DST 规则。
 
 - 同步后右上角显示 `CST 09:42`，Info 页显示完整日期、时间和时区
@@ -191,6 +203,14 @@ option time_zone 'CST-8'
 串口 `wnm` 可以看 IE 67/69/98 的计数；`tz CST-8` 可以手动兜底。
 部分 hostapd 把 Time Zone 只放进 Probe Response；如果只看到 UTC，等附近有客户端探测，
 或者直接用 `tz CST-8` 设置本地时区。
+
+> OpenWrt/hostapd 的 Time Value 不会周期性刷新。AP 运行很久后，广告时间会落后于真实
+> 时间；重启 hostapd/Wi-Fi 可以刷新一次。这是 AP 侧实现问题，不是解析器的问题。
+
+如果愿意在 AP 侧修一下，`docs/hostapd-time-refresh.patch` 让 hostapd 在每次发
+Beacon/Probe Response 时重新生成 Time Advertisement，而不是只生成一次。补丁
+针对 hostapd 2.11，改完后重启 hostapd/Wi-Fi 即可。它修正的是 OpenWrt 的
+"direct UTC" 行为，不改变 802.11 帧格式。
 
 ## 实现要点
 

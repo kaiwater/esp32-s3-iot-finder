@@ -76,6 +76,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  clock                 print WNM time / time zone");
     ESP_LOGI("cli", "  wnm                   print time-element counters");
     ESP_LOGI("cli", "  tz CST-8              manual POSIX time zone fallback");
+    ESP_LOGI("cli", "  timemode auto|hostapd|standard   Time Value interpretation");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
 }
@@ -92,10 +93,11 @@ static void print_clock(void)
                  s_clock.source[0], s_clock.source[1], s_clock.source[2],
                  s_clock.source[3], s_clock.source[4], s_clock.source[5]);
     }
-    ESP_LOGI("cli", "clock=%04u-%02u-%02u %02u:%02u:%02u tz=%s off=%+ld age=%lu src=%s",
+    ESP_LOGI("cli", "clock=%04u-%02u-%02u %02u:%02u:%02u tz=%s off=%+ld age=%lu src=%s mode=%s",
              s_clock.year, s_clock.month, s_clock.day, s_clock.hour, s_clock.min,
              s_clock.sec, s_clock.tz_name[0] ? s_clock.tz_name : "UTC",
-             (long)s_clock.offset_sec, (unsigned long)s_clock.age_ms, src);
+             (long)s_clock.offset_sec, (unsigned long)s_clock.age_ms, src,
+             s_clock.tsf_mode ? "tsf" : "direct");
 }
 
 static void print_status(void)
@@ -164,6 +166,8 @@ static void handle_line(char *line)
     } else if (!strncmp(line, "tz ", 3)) {
         const char *arg = line + 3;
         wnm_clock_set_tz((const uint8_t *)arg, (uint8_t)strlen(arg), NULL);
+    } else if (!strncmp(line, "timemode ", 9)) {
+        wnm_clock_set_mode(line + 9);
     } else if (!strcmp(line, "reboot")) {
         esp_restart();
     } else if (!strcmp(line, "help") || !strcmp(line, "?")) {

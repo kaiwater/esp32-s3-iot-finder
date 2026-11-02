@@ -110,8 +110,18 @@ The header clock is real local time when a 2.4GHz AP advertises 802.11v WNM
 time, otherwise it falls back to `UP HH:MM` uptime.
 
 - IE **69** Time Advertisement with timing capability 2 contains a 10-byte
-  broken-down UTC value for the instant when the AP TSF was zero.  Adding the
-  8-byte TSF from the same Beacon/Probe Response gives current UTC.
+  broken-down UTC value.  In a standards-compliant AP the value is the UTC at
+  which TSF was zero, so adding the 8-byte TSF gives current UTC.
+- OpenWrt/hostapd 2.11 builds this element once and writes the current UTC into
+  the "TSF 0" field (its source still carries a `FIX:` comment).  In that case
+  the value must be used as a direct anchor and advanced with the local
+  monotonic clock.
+- `auto` mode collects samples from multiple BSSIDs and compares the spread of
+  the two interpretations.  A small direct spread with a large TSF spread picks
+  direct; the reverse picks TSF.  `timemode direct|standard` overrides it.
+- `direct` keeps a stable anchor source so the display does not jump between APs
+  with clocks a few seconds apart.  A source is replaced only when it is stale
+  or its Time Value changes.
 - IE **98** Time Zone contains a POSIX TZ string (`CST-8`,
   `CET-1CEST,M3.5.0,M10.5.0/3`, ...).  The parser handles the standard offset,
   optional DST offset, and `Mmonth.week.weekday` transition rules.
@@ -120,6 +130,9 @@ time, otherwise it falls back to `UP HH:MM` uptime.
 - If no time element is seen, the UI falls back to uptime.
 - 67 is **not** the time element; it is BSS AVB Admission Capacity.  The `wnm`
   serial command prints counters for 67/69/98 for diagnostics.
+- `docs/hostapd-time-refresh.patch` is an optional AP-side workaround that makes
+  hostapd rebuild the Time Advertisement on every beacon instead of caching the
+  first one.
 
 The header and the secondary PEAK/FPS/CAND counters use a dedicated 2x5
 numeric font, so they fit without competing with the RSSI display.

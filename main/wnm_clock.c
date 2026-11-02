@@ -37,11 +37,33 @@ typedef struct {
     tz_rule_t end;
 } tz_t;
 
+typedef enum {
+    TIME_MODE_DIRECT = 0, /* hostapd bug: Time Value is current UTC */
+    TIME_MODE_TSF,        /* standard: Time Value is UTC at TSF 0 */
+} time_mode_t;
+
+typedef struct {
+    bool used;
+    uint8_t source[6];
+    int64_t base_utc;
+    uint64_t tsf_us;
+    uint32_t mono_ms;
+} time_sample_t;
+
+#define TIME_SAMPLES 8
+
 static bool s_synced;
-static int64_t s_sync_utc;
-static uint32_t s_sync_ms;
+static int64_t s_anchor_utc;
+static uint32_t s_anchor_ms;
+static int64_t s_anchor_base;
+static uint32_t s_anchor_source_ms;
+static bool s_have_anchor_source;
+static uint8_t s_anchor_source[6];
 static bool s_have_source;
 static uint8_t s_source[6];
+static time_mode_t s_time_mode = TIME_MODE_DIRECT;
+static bool s_mode_locked;
+static time_sample_t s_samples[TIME_SAMPLES];
 
 static bool s_has_tz;
 static tz_t s_tz;
@@ -328,16 +350,109 @@ static int64_t abs64(int64_t v)
     return v < 0 ? -v : v;
 }
 
+static int64_t sample_direct(const time_sample_t *s, uint32_t now)
+{
+    return s->base_utc + (int64_t)((uint32_t)(now - s->mono_ms) / 1000u);
+}
+
+static int64_t sample_tsf(const time_sample_t *s, uint32_t now)
+{
+    return s->base_utc + (int64_t)(s->tsf_us / 1000000ull) +
+           (int64_t)((uint32_t)(now - s->mono_ms) / 1000u);
+}
+
+static int64_t current_utc(uint32_t now)
+{
+    if (!s_synced) return 0;
+    return s_anchor_utc + (int64_t)((uint32_t)(now - s_anchor_ms) / 1000u);
+}
+
+static time_sample_t *update_sample(const uint8_t source[6], int64_t base,
+                                    uint64_t tsf_us, uint32_t mono_ms)
+{
+    time_sample_t *oldest = &s_samples[0];
+    for (int i = 0; i < TIME_SAMPLES; i++) {
+        time_sample_t *s = &s_samples[i];
+        if (s->used && memcmp(s->source, source, 6) == 0) {
+            s->base_utc = base;
+            s->tsf_us = tsf_us;
+            s->mono_ms = mono_ms;
+            return s;
+        }
+        if (!s->used) {
+            s->used = true;
+            memcpy(s->source, source, 6);
+            s->base_utc = base;
+            s->tsf_us = tsf_us;
+            s->mono_ms = mono_ms;
+            return s;
+        }
+        if (s->mono_ms < oldest->mono_ms) oldest = s;
+    }
+    oldest->used = true;
+    memcpy(oldest->source, source, 6);
+    oldest->base_utc = base;
+    oldest->tsf_us = tsf_us;
+    oldest->mono_ms = mono_ms;
+    return oldest;
+}
+
+static void evaluate_mode(uint32_t now)
+{
+    if (s_mode_locked) return;
+
+    int n = 0;
+    int64_t dmin = 0, dmax = 0, tmin = 0, tmax = 0;
+    for (int i = 0; i < TIME_SAMPLES; i++) {
+        time_sample_t *s = &s_samples[i];
+        if (!s->used || (uint32_t)(now - s->mono_ms) > 30000) continue;
+        int64_t d = sample_direct(s, now);
+        int64_t t = sample_tsf(s, now);
+        if (!n) {
+            dmin = dmax = d;
+            tmin = tmax = t;
+        } else {
+            if (d < dmin) dmin = d;
+            if (d > dmax) dmax = d;
+            if (t < tmin) tmin = t;
+            if (t > tmax) tmax = t;
+        }
+        n++;
+    }
+
+    if (n < 2) {
+        s_time_mode = TIME_MODE_DIRECT;
+        return;
+    }
+
+    int64_t dspread = dmax - dmin;
+    int64_t tspread = tmax - tmin;
+    if (tspread * 4 < dspread) {
+        s_time_mode = TIME_MODE_TSF;
+    } else if (dspread * 4 < tspread) {
+        s_time_mode = TIME_MODE_DIRECT;
+    } else {
+        s_time_mode = TIME_MODE_DIRECT; /* hostapd is the common case */
+    }
+}
+
 void wnm_clock_init(void)
 {
     s_synced = false;
-    s_sync_utc = 0;
-    s_sync_ms = 0;
+    s_anchor_utc = 0;
+    s_anchor_ms = 0;
+    s_anchor_base = 0;
+    s_anchor_source_ms = 0;
+    s_have_anchor_source = false;
+    memset(s_anchor_source, 0, sizeof(s_anchor_source));
     s_have_source = false;
     memset(s_source, 0, sizeof(s_source));
     s_has_tz = false;
     memset(&s_tz, 0, sizeof(s_tz));
     s_tz_text[0] = 0;
+    s_time_mode = TIME_MODE_DIRECT;
+    s_mode_locked = false;
+    memset(s_samples, 0, sizeof(s_samples));
 }
 
 void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
@@ -346,34 +461,55 @@ void wnm_clock_set_utc(const uint8_t time_value[10], uint64_t tsf_us,
     int64_t base;
     if (!decode_time_value(time_value, &base)) return;
 
-    int64_t candidate = base + (int64_t)(tsf_us / 1000000ull);
-    bool same_source = s_have_source && memcmp(source, s_source, 6) == 0;
+    uint32_t now = now_ms();
+    time_mode_t old_mode = s_time_mode;
+    update_sample(source, base, tsf_us, mono_ms);
+    evaluate_mode(now);
+    bool mode_changed = old_mode != s_time_mode;
+    if (mode_changed) s_have_anchor_source = false;
 
-    if (s_synced) {
-        int64_t est = s_sync_utc +
-                      (int64_t)((uint32_t)(mono_ms - s_sync_ms) / 1000u);
-        int64_t diff = candidate - est;
-        if (!same_source && abs64(diff) <= 5) return;
+    int64_t old_utc = current_utc(now);
+    bool first = !s_synced;
+    bool same_anchor = s_have_anchor_source &&
+                       memcmp(source, s_anchor_source, 6) == 0;
+    bool anchor_stale = !s_have_anchor_source ||
+                        (uint32_t)(now - s_anchor_source_ms) > 15000;
+    bool fresher_direct = s_time_mode == TIME_MODE_DIRECT && !same_anchor &&
+                          base > s_anchor_base + 5;
+    bool switched_source = false;
+
+    if (same_anchor || anchor_stale || fresher_direct) {
+        if (!same_anchor) switched_source = true;
+        memcpy(s_anchor_source, source, 6);
+        s_have_anchor_source = true;
+        s_anchor_source_ms = now;
+        memcpy(s_source, source, 6);
+        s_have_source = true;
+
+        if (s_time_mode == TIME_MODE_TSF) {
+            s_anchor_utc = base + (int64_t)(tsf_us / 1000000ull);
+            s_anchor_ms = mono_ms;
+        } else if (!same_anchor || abs64(base - s_anchor_base) > 5) {
+            /* hostapd builds this element once; keep the anchor and let the
+             * local monotonic clock advance it until the value really changes. */
+            s_anchor_utc = base;
+            s_anchor_ms = mono_ms;
+            s_anchor_base = base;
+        }
     }
 
-    bool first = !s_synced;
-    bool source_changed = !same_source;
-    int64_t old = s_sync_utc;
-
-    s_sync_utc = candidate;
-    s_sync_ms = mono_ms;
     s_synced = true;
-    memcpy(s_source, source, 6);
-    s_have_source = true;
-
-    if (first || source_changed || abs64(candidate - old) > 5) {
+    int64_t candidate = current_utc(now);
+    if (first || mode_changed || switched_source ||
+        abs64(candidate - old_utc) > 5) {
         int y;
         unsigned m, d;
         civil_from_days(candidate / 86400, &y, &m, &d);
         int sod = (int)(candidate % 86400);
         if (sod < 0) sod += 86400;
-        ESP_LOGI(TAG, "UTC %04d-%02u-%02u %02u:%02u:%02u from %02X:%02X:%02X:%02X:%02X:%02X",
+        ESP_LOGI(TAG, "UTC %04d-%02u-%02u %02u:%02u:%02u %s from %02X:%02X:%02X:%02X:%02X:%02X",
                  y, m, d, sod / 3600, (sod / 60) % 60, sod % 60,
+                 s_time_mode == TIME_MODE_TSF ? "TSF" : "DIRECT",
                  source[0], source[1], source[2], source[3], source[4], source[5]);
     }
 }
@@ -406,6 +542,25 @@ void wnm_clock_set_tz(const uint8_t *tz, uint8_t len, const uint8_t source[6])
              source[0], source[1], source[2], source[3], source[4], source[5]);
 }
 
+void wnm_clock_set_mode(const char *mode)
+{
+    if (!mode || !mode[0]) return;
+    memset(s_samples, 0, sizeof(s_samples));
+    if (!strcmp(mode, "tsf") || !strcmp(mode, "standard")) {
+        s_time_mode = TIME_MODE_TSF;
+        s_mode_locked = true;
+        ESP_LOGI(TAG, "time mode set to TSF (standard)");
+    } else if (!strcmp(mode, "direct") || !strcmp(mode, "hostapd")) {
+        s_time_mode = TIME_MODE_DIRECT;
+        s_mode_locked = true;
+        ESP_LOGI(TAG, "time mode set to direct (hostapd)");
+    } else {
+        s_time_mode = TIME_MODE_DIRECT;
+        s_mode_locked = false;
+        ESP_LOGI(TAG, "time mode set to auto");
+    }
+}
+
 void wnm_clock_poll(wnm_clock_view_t *v)
 {
     if (!v) return;
@@ -420,8 +575,7 @@ void wnm_clock_poll(wnm_clock_view_t *v)
     }
 
     uint32_t now = now_ms();
-    int64_t utc = s_sync_utc +
-                  (int64_t)((uint32_t)(now - s_sync_ms) / 1000u);
+    int64_t utc = current_utc(now);
     int32_t off = 0;
     const char *name = "UTC";
     if (s_has_tz) off = tz_offset_at(utc, &s_tz, &name);
@@ -443,8 +597,9 @@ void wnm_clock_poll(wnm_clock_view_t *v)
     v->offset_sec = off;
     strncpy(v->tz_name, name, sizeof(v->tz_name) - 1);
     v->tz_name[sizeof(v->tz_name) - 1] = 0;
-    v->age_ms = now - s_sync_ms;
+    v->age_ms = now - s_anchor_ms;
     v->have_source = s_have_source;
+    v->tsf_mode = (s_time_mode == TIME_MODE_TSF);
     memcpy(v->source, s_source, 6);
 }
 

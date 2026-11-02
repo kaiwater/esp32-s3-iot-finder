@@ -1,0 +1,25 @@
+From: ESP32-S3 IoT Finder <noreply@example.invalid>
+Subject: [PATCH] hostapd: refresh Time Advertisement on each beacon
+
+hostapd builds the 802.11v Time Advertisement element once and caches it,
+even though the comment in hostapd_update_time_adv() notes that the Time
+Value should be calculated from the current TSF.  After the first beacon the
+advertised UTC is therefore stale by the time hostapd has been running.
+
+Refresh the element on every call where it is emitted.  This keeps the
+direct-UTC interpretation used by OpenWrt/hostapd up to date.  It is a
+workaround for AP-side time distribution, not a change to the 802.11 frame
+format.
+
+--- a/src/ap/ieee802_11_shared.c
++++ b/src/ap/ieee802_11_shared.c
+@@ -651,8 +651,7 @@ u8 * hostapd_eid_time_adv(struct hostapd_data *hapd, u8 *eid)
+ 	if (hapd->conf->time_advertisement != 2)
+ 		return eid;
+ 
+-	if (hapd->time_adv == NULL &&
+-	    hostapd_update_time_adv(hapd) < 0)
++	if (hostapd_update_time_adv(hapd) < 0)
+ 		return eid;
+ 
+ 	if (hapd->time_adv == NULL)
