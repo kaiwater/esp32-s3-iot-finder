@@ -44,7 +44,9 @@
 
 #define BTN_LONG_MS 700
 
-#define RGB565(r, g, b) ((uint16_t)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3)))
+/* This panel's colour filter/wiring maps green and blue swapped.  Pack B in
+ * the green field and G in the blue field so the displayed hue is correct. */
+#define RGB565(r, g, b) ((uint16_t)((((r) >> 3) << 11) | (((b) >> 2) << 5) | ((g) >> 3)))
 
 #define COL_BG     RGB565(0x00, 0x14, 0x08)
 #define COL_TEXT   RGB565(0xD8, 0xFF, 0xE4)
