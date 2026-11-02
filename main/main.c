@@ -159,6 +159,8 @@ static void console_task(void *arg)
                 handle_line(line);
                 n = 0;
             }
+        } else if (c == 0x08 || c == 0x7F) {
+            if (n) n--;
         } else if (n + 1 < sizeof(line)) {
             line[n++] = (char)c;
         }
