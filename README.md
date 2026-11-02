@@ -129,6 +129,8 @@ clear                   清除目标
 learn                   开始 5 秒学习
 next                    选择下一个候选
 prev                    选择上一个候选
+list                    列出候选 STA，带 AP BSSID / SSID / probe SSID
+stas                    按 AP 分组列出 STA（从 AP 出发分类）
 lock                    锁定 / 解除锁定信道
 chan                    手动下一信道
 chprev                  手动上一信道
@@ -179,6 +181,8 @@ help                    帮助
 - 底部 `RF` 是 NRF 在当前 Wi-Fi 频道中心 1MHz 的 RPD 占用，**不是 dBm**
 - 非 ASCII SSID 在 FINDER 页显示 `SSID [UTF8]` / `SSID [GBK]`，进 `* -> SSID` 页看完整中文
 - SSID 页显示 BSSID、信道、AP BSS Load 和 5 行中文；两种编码都能解时 `#` 切换
+- 听不到 AP Beacon 时，SSID 页显示 `NO SSID / AP BEACON NOT HEARD`，但 BSSID 仍然保留，
+  可用串口 `stas` 按 AP 分组
 
 ---
 
@@ -272,6 +276,9 @@ SSID 是任意字节串，现场可能同时存在 UTF-8 和 GBK 两种编码。
 - 默认 1–13 跳频，每信道 150ms；听到目标后自动锁定
 - 国家码 `01` + 手动 1–13，避免 12/13 被默认禁用
 - 被动学习 BSSID/SSID，不调用 `esp_wifi_scan`，不发 probe request
+- 每个候选 STA 记录它 probe 的 SSID；`list` 显示 `AP` 和 `SSID`，`stas` 按 BSSID 分组
+- 如果只听到 STA 的数据帧、听不到它所属 AP 的 Beacon（隐藏 SSID / mesh / 5G-only），
+  就只能显示 BSSID，或在 `probe` 里显示该 STA 正在找的 SSID；这是 2.4G 嗅探的物理边界
 - 解析 AP 的 BSS Load（IE 11）：站点数、信道利用率、AAC；Info 页显示为 `AP 38%/2`
 - BSS Load 是 AP 聚合数据，不能替代目标 RSSI，只用于判断信道拥挤/辅助诊断
 - 服务时钟优先使用 WNM `Time Advertisement`（IE 69）+ 时区（IE 98）

@@ -18,6 +18,7 @@ static volatile bool s_ok;
 static volatile uint8_t s_duty;
 static volatile uint8_t s_wifi_ch = 1;
 static bool s_bus_ready;
+static bool s_logged_found;
 static bool s_logged_lost;
 static const int s_csn[NRF_MODULE_COUNT] = NRF_CSN_PINS;
 static const int s_ce[NRF_MODULE_COUNT] = NRF_CE_PINS;
@@ -41,7 +42,10 @@ static bool open_radio(void)
     }
     for (int i = 0; i < NRF_MODULE_COUNT; i++) {
         if (nrf_init(&s_radio, s_csn[i], s_ce[i])) {
-            ESP_LOGI(TAG, "NRF24L01 on CSN %d", s_csn[i]);
+            if (!s_logged_found) {
+                ESP_LOGI(TAG, "NRF24L01 on CSN %d", s_csn[i]);
+                s_logged_found = true;
+            }
             return true;
         }
     }

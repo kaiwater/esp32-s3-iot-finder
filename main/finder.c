@@ -137,6 +137,8 @@ typedef struct {
     uint32_t learn_frames;
     int8_t learn_rssi;
     bool local;
+    char probe_ssid[FINDER_SSID_MAX];
+    uint8_t probe_ssid_len;
 } cand_rec_t;
 
 typedef struct {
@@ -170,6 +172,10 @@ typedef struct {
     uint32_t frames;
     int8_t rssi;
     uint8_t ch;
+    char ap_ssid[FINDER_SSID_MAX];
+    uint8_t ap_ssid_len;
+    char probe_ssid[FINDER_SSID_MAX];
+    uint8_t probe_ssid_len;
 } dump_t;
 
 typedef struct {
@@ -531,6 +537,33 @@ static void cand_touch(const uint8_t *mac, int8_t rssi, uint8_t ch,
     }
 }
 
+static void cand_note_ssid(const uint8_t *mac, const uint8_t *ssid, uint8_t len)
+{
+    if (mac_group(mac) || mac_zero(mac)) return;
+    if (!len || len >= FINDER_SSID_MAX) return;
+    cand_rec_t *c = cand_get(mac);
+    memcpy(c->probe_ssid, ssid, len);
+    c->probe_ssid[len] = 0;
+    c->probe_ssid_len = len;
+}
+
+static bool cand_probe_ssid(const uint8_t *mac, char *out, size_t n,
+                            uint8_t *out_len)
+{
+    bool found = false;
+    if (xSemaphoreTake(s_tab_lock, pdMS_TO_TICKS(20)) == pdTRUE) {
+        cand_rec_t *c = cand_find(mac);
+        if (c && c->probe_ssid_len && c->probe_ssid_len < n) {
+            memcpy(out, c->probe_ssid, c->probe_ssid_len);
+            out[c->probe_ssid_len] = 0;
+            *out_len = c->probe_ssid_len;
+            found = true;
+        }
+        xSemaphoreGive(s_tab_lock);
+    }
+    return found;
+}
+
 static void drain_events(void)
 {
     if (!s_evt_q) return;
@@ -559,6 +592,7 @@ static void drain_events(void)
                     s_ssid_hint_len = ev.ssid_len;
                 }
                 cand_touch(ev.addr2, ev.rssi, ev.ch, NULL, ev.ms, learn);
+                if (ev.ssid_len) cand_note_ssid(ev.addr2, ev.ssid, ev.ssid_len);
             } else if (ev.subtype == 0 || ev.subtype == 2 || ev.subtype == 11) {
                 cand_touch(ev.addr2, ev.rssi, ev.ch, ev.addr3, ev.ms, learn);
             }
@@ -914,7 +948,7 @@ void finder_print_wnm(void)
 
 void finder_print_bss(void)
 {
-    bss_dump_t list[BSS_TABLE_LEN];
+    static bss_dump_t list[BSS_TABLE_LEN]; /* console task stack is small */
     int n = 0;
     uint32_t now = now_ms();
 
@@ -967,9 +1001,36 @@ void finder_print_bss(void)
     }
 }
 
+static void dump_candidate(dump_t *d, const cand_rec_t *c, uint32_t now)
+{
+    memcpy(d->mac, c->mac, 6);
+    memcpy(d->bssid, c->bssid, 6);
+    d->last_ms = c->last_ms;
+    d->frames = c->frames;
+    d->rssi = c->rssi;
+    d->ch = c->channel;
+    d->ap_ssid_len = 0;
+    d->probe_ssid_len = 0;
+    d->ap_ssid[0] = 0;
+    d->probe_ssid[0] = 0;
+
+    bss_rec_t *b = bss_find(c->bssid);
+    if (b && b->ssid_len) {
+        memcpy(d->ap_ssid, b->ssid, b->ssid_len);
+        d->ap_ssid[b->ssid_len] = 0;
+        d->ap_ssid_len = b->ssid_len;
+    }
+    if (c->probe_ssid_len) {
+        memcpy(d->probe_ssid, c->probe_ssid, c->probe_ssid_len);
+        d->probe_ssid[c->probe_ssid_len] = 0;
+        d->probe_ssid_len = c->probe_ssid_len;
+    }
+    (void)now;
+}
+
 void finder_print_candidates(void)
 {
-    dump_t list[CAND_TABLE_LEN];
+    static dump_t list[CAND_TABLE_LEN]; /* console task stack is small */
     int n = 0;
     uint32_t now = now_ms();
 
@@ -977,12 +1038,7 @@ void finder_print_candidates(void)
     for (int i = 0; i < CAND_TABLE_LEN; i++) {
         cand_rec_t *c = &s_cand[i];
         if (!c->used || now - c->last_ms > ACTIVE_MS) continue;
-        memcpy(list[n].mac, c->mac, 6);
-        memcpy(list[n].bssid, c->bssid, 6);
-        list[n].last_ms = c->last_ms;
-        list[n].frames = c->frames;
-        list[n].rssi = c->rssi;
-        list[n].ch = c->channel;
+        dump_candidate(&list[n], c, now);
         n++;
     }
     xSemaphoreGive(s_tab_lock);
@@ -1003,11 +1059,94 @@ void finder_print_candidates(void)
         char mac[18], bss[18], age[16];
         mac_text(list[i].mac, mac);
         mac_text(list[i].bssid, bss);
+        if (mac_zero(list[i].bssid)) snprintf(bss, sizeof(bss), "--");
         snprintf(age, sizeof(age), "%lus", (unsigned long)((now - list[i].last_ms) / 1000));
-        ESP_LOGI(TAG, "%2d %s  %4d dBm  ch %u  %lu f  bssid %s  %s",
+
+        char ssid[FINDER_SSID_MAX + 8];
+        if (list[i].ap_ssid_len) {
+            snprintf(ssid, sizeof(ssid), "SSID %s", list[i].ap_ssid);
+        } else if (list[i].probe_ssid_len) {
+            snprintf(ssid, sizeof(ssid), "probe %s", list[i].probe_ssid);
+        } else {
+            snprintf(ssid, sizeof(ssid), "SSID --");
+        }
+
+        ESP_LOGI(TAG, "%2d %s  %4d dBm  ch %u  %lu f  AP %s  %s  %s",
                  i + 1, mac, list[i].rssi, list[i].ch,
-                 (unsigned long)list[i].frames, bss, age);
+                 (unsigned long)list[i].frames, bss, ssid, age);
     }
+}
+
+void finder_print_stas_by_ap(void)
+{
+    static dump_t list[CAND_TABLE_LEN]; /* console task stack is small */
+    int n = 0;
+    uint32_t now = now_ms();
+
+    xSemaphoreTake(s_tab_lock, portMAX_DELAY);
+    for (int i = 0; i < CAND_TABLE_LEN; i++) {
+        cand_rec_t *c = &s_cand[i];
+        if (!c->used || now - c->last_ms > ACTIVE_MS) continue;
+        dump_candidate(&list[n], c, now);
+        n++;
+    }
+    xSemaphoreGive(s_tab_lock);
+
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            int cmp = memcmp(list[i].bssid, list[j].bssid, 6);
+            bool swap = cmp > 0 ||
+                        (cmp == 0 && list[j].frames > list[i].frames);
+            if (swap) {
+                dump_t t = list[i];
+                list[i] = list[j];
+                list[j] = t;
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "%d active STA(s), grouped by AP", n);
+    int groups = 0;
+    for (int i = 0; i < n && groups < 12; ) {
+        int j = i + 1;
+        while (j < n && memcmp(list[i].bssid, list[j].bssid, 6) == 0) j++;
+
+        char ap[18];
+        mac_text(list[i].bssid, ap);
+        if (mac_zero(list[i].bssid)) snprintf(ap, sizeof(ap), "--");
+
+        const char *ssid = list[i].ap_ssid_len ? list[i].ap_ssid : NULL;
+        const char *probe = NULL;
+        if (!ssid) {
+            for (int k = i; k < j; k++) {
+                if (list[k].probe_ssid_len) {
+                    probe = list[k].probe_ssid;
+                    break;
+                }
+            }
+        }
+
+        char line[192];
+        int off = snprintf(line, sizeof(line), "AP %s  ", ap);
+        if (ssid) off += snprintf(line + off, sizeof(line) - off, "SSID %s", ssid);
+        else if (probe) off += snprintf(line + off, sizeof(line) - off, "SSID -- probe %s", probe);
+        else off += snprintf(line + off, sizeof(line) - off, "SSID --");
+        off += snprintf(line + off, sizeof(line) - off, "  ch %u  %d STA",
+                        list[i].ch, j - i);
+
+        int shown = j - i > 4 ? 4 : j - i;
+        for (int k = i; k < i + shown && off < (int)sizeof(line) - 24; k++) {
+            char mac[18];
+            mac_text(list[k].mac, mac);
+            off += snprintf(line + off, sizeof(line) - off, "  %s(%d)",
+                            mac, list[k].rssi);
+        }
+        if (j - i > shown) snprintf(line + off, sizeof(line) - off, " +%d", j - i - shown);
+        ESP_LOGI(TAG, "%s", line);
+        groups++;
+        i = j;
+    }
+    ESP_LOGI(TAG, "use 'mac XX:..' to lock one STA");
 }
 
 bool finder_init(void)
@@ -1159,7 +1298,8 @@ void finder_poll(finder_view_t *v)
     v->ssid_nonascii = false;
     v->ssid[0] = 0;
     v->have_ap_load = false;
-    if (v->have_bssid) {
+    if (v->have_bssid &&
+        xSemaphoreTake(s_tab_lock, portMAX_DELAY) == pdTRUE) {
         bss_rec_t *b = bss_find(v->bssid);
         if (b && b->ssid_len) {
             memcpy(v->ssid, b->ssid, b->ssid_len);
@@ -1174,6 +1314,7 @@ void finder_poll(finder_view_t *v)
             v->ap_load = b->load_util;
             v->ap_sta_count = b->load_sta;
         }
+        xSemaphoreGive(s_tab_lock);
     }
     if (!v->have_ssid && s_ssid_hint_len) {
         memcpy(v->ssid, s_ssid_hint, s_ssid_hint_len);
@@ -1181,6 +1322,15 @@ void finder_poll(finder_view_t *v)
         v->have_ssid = true;
         for (int i = 0; i < s_ssid_hint_len; i++) {
             if ((uint8_t)v->ssid[i] & 0x80) v->ssid_nonascii = true;
+        }
+    }
+    if (!v->have_ssid && s_target_set) {
+        uint8_t len = 0;
+        if (cand_probe_ssid(s_target, v->ssid, sizeof(v->ssid), &len)) {
+            v->have_ssid = true;
+            for (int i = 0; i < len; i++) {
+                if ((uint8_t)v->ssid[i] & 0x80) v->ssid_nonascii = true;
+            }
         }
     }
 

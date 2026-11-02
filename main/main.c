@@ -133,7 +133,8 @@ static void print_help(void)
     ESP_LOGI("cli", "  chan                  manual next channel");
     ESP_LOGI("cli", "  chprev                manual previous channel");
     ESP_LOGI("cli", "  peak                  clear peak");
-    ESP_LOGI("cli", "  list                  print recent candidates");
+    ESP_LOGI("cli", "  list                  print recent candidates with AP/SSID");
+    ESP_LOGI("cli", "  stas                  group candidates by AP (BSSID/SSID)");
     ESP_LOGI("cli", "  bss                   print recent BSSID/SSID");
     ESP_LOGI("cli", "  clock                 print WNM time / time zone");
     ESP_LOGI("cli", "  wnm                   print time-element counters");
@@ -225,6 +226,8 @@ static void handle_line(char *line)
         finder_clear_peak();
     } else if (!strcmp(line, "list") || !strcmp(line, "cand")) {
         finder_print_candidates();
+    } else if (!strcmp(line, "stas") || !strcmp(line, "byap")) {
+        finder_print_stas_by_ap();
     } else if (!strcmp(line, "bss") || !strcmp(line, "aps")) {
         finder_print_bss();
     } else if (!strcmp(line, "status")) {
@@ -291,7 +294,7 @@ static void console_start(void)
             return;
         }
     }
-    xTaskCreatePinnedToCore(console_task, "console", 4096, NULL, 2, NULL, 1);
+    xTaskCreatePinnedToCore(console_task, "console", 8192, NULL, 2, NULL, 1);
     ESP_LOGI("cli", "type 'help' for commands");
 }
 

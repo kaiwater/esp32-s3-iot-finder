@@ -68,7 +68,11 @@ Every management/data frame contributes a candidate from the STA address:
 - FromDS data: `addr1`
 - probe request / assoc request: `addr2`
 
-The 32-entry table tracks frames, last seen, RSSI, channel and BSSID.  Learning
+The 32-entry table tracks frames, last seen, RSSI, channel and BSSID.  Probe
+requests also store the SSID being sought, so an unassociated STA can still be
+classified by the network name it is probing for.  `list` prints the AP BSSID
+and the best-known SSID; `stas` groups the recent candidates by BSSID so an AP
+can be used as the starting point.  Learning
 scores candidates by `(rssi + 100) * 100 + min(frames, 99)`, so the strongest
 device wins with activity as a tie-breaker.  A candidate must be seen during
 the five-second window.  Short `>` / `<` move forward/backward through the
@@ -90,7 +94,10 @@ The target's BSSID is derived from its own frames:
 - IBSS: `addr3`
 
 The SSID shown on screen comes from that BSS entry, or from the target's own
-probe-request IE if the AP is not in the cache.
+probe-request IE if the AP is not in the cache.  If neither source exists the
+screen keeps the BSSID and says `AP BEACON NOT HEARD`: a 2.4GHz sniffer cannot
+recover the SSID of a hidden/mesh AP, or of a 5GHz-only AP, from encrypted STA
+data frames.
 
 ## Persistence
 

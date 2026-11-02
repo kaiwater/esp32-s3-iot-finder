@@ -439,6 +439,8 @@ static void draw_ssid_page(const finder_view_t *v, const ui_state_t *ui)
 
     if (!v->have_ssid || !n) {
         text3x5(4, 40, "NO SSID", 2, COL_DIM);
+        text3x5(4, 58, v->have_bssid ? "AP BEACON NOT HEARD"
+                                     : "NO ASSOCIATED AP", 1, COL_DIM);
     } else {
         draw_ssid_text(v->ssid, enc, COL_TEXT);
     }
