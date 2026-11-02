@@ -83,6 +83,12 @@ static void print_status(void)
                  s_view.target[0], s_view.target[1], s_view.target[2],
                  s_view.target[3], s_view.target[4], s_view.target[5]);
     }
+    char bssid[18] = "--";
+    if (s_view.have_bssid) {
+        snprintf(bssid, sizeof(bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 s_view.bssid[0], s_view.bssid[1], s_view.bssid[2],
+                 s_view.bssid[3], s_view.bssid[4], s_view.bssid[5]);
+    }
     ESP_LOGI("cli", "wifi=%d target=%s rssi=%d fps=%lu ch=%u mode=%d state=%d cand=%lu pkt=%lu drop=%lu nrf=%d/%u%% heap=%lu",
              s_view.wifi_ok, mac, s_view.have_rssi ? s_view.rssi : -100,
              (unsigned long)s_view.fps, s_view.channel, s_view.chan_mode,
@@ -90,6 +96,9 @@ static void print_status(void)
              (unsigned long)s_view.packets, (unsigned long)s_view.drops,
              s_view.nrf_ok, s_view.nrf_duty,
              (unsigned long)esp_get_free_heap_size());
+    ESP_LOGI("cli", "vendor=%s bssid=%s ssid=%s peak=%d",
+             s_view.vendor[0] ? s_view.vendor : "--", bssid,
+             s_view.have_ssid ? s_view.ssid : "--", s_view.peak);
 }
 
 static void handle_line(char *line)
