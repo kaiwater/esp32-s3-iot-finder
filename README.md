@@ -205,7 +205,9 @@ option time_zone 'CST-8'
 或者直接用 `tz CST-8` 设置本地时区。
 
 > OpenWrt/hostapd 的 Time Value 不会周期性刷新。AP 运行很久后，广告时间会落后于真实
-> 时间；重启 hostapd/Wi-Fi 可以刷新一次。这是 AP 侧实现问题，不是解析器的问题。
+> 时间；重启 hostapd/Wi-Fi 可以刷新一次。OpenWrt 上可以只重置 2.4G：
+> `wifi up radio1`。finder 会检测到新的 Time Value 并重新锚定。
+> 这是 AP 侧实现问题，不是解析器的问题。
 
 如果愿意在 AP 侧修一下，`docs/hostapd-time-refresh.patch` 让 hostapd 在每次发
 Beacon/Probe Response 时重新生成 Time Advertisement，而不是只生成一次。补丁
