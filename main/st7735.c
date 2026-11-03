@@ -938,19 +938,19 @@ static void draw_rf_scan_page(const ui_state_t *ui)
     if (best >= 0) {
         uint32_t age_s = sc[best].peak_age_ms / 1000;
         if (age_s > 99) age_s = 99;
-        snprintf(buf, sizeof(buf), "CH%u PK%u AGE%lus",
-                 best + 1, best_peak, (unsigned long)age_s);
+        /* Keep the original HIT x/y in the summary line. */
+        snprintf(buf, sizeof(buf), "CH%u PK%u AGE%lus HIT%u/%u",
+                 best + 1, best_peak, (unsigned long)age_s,
+                 sc[best].hits, sc[best].sweeps);
         text3x5(2, 112, buf, 1, COL_WARN);
 
-        /* Duplicate HIT in the bottom-right, larger and right-aligned. */
-        char hit[20];
-        snprintf(hit, sizeof(hit), "%u/%u", sc[best].hits, sc[best].sweeps);
-        int hs = strlen(hit) <= 5 ? 2 : 1;
-        int hw = (int)strlen(hit) * 4 * hs;
+        /* New role: the x of HIT x/y (hit count), 2x and right-aligned. */
+        char hit[8];
+        snprintf(hit, sizeof(hit), "%u", sc[best].hits);
+        int hw = (int)strlen(hit) * 8;
         int hx = 158 - hw;
         if (hx < 112) hx = 112;
-        text3x5(96, 112, "HIT", 1, COL_DIM);
-        text3x5(hx, hs == 2 ? 109 : 112, hit, hs, COL_WARN);
+        text3x5(hx, 109, hit, 2, COL_WARN);
     } else {
         text3x5(2, 112, "NO ENERGY YET", 1, COL_DIM);
     }
