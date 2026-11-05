@@ -882,6 +882,9 @@ static void draw_rf_scan_page(const ui_state_t *ui)
     char buf[64];
     clear_panel();
     text3x5(2, 2, "RF SCAN", 2, COL_ACCENT);
+    snprintf(buf, sizeof(buf), "S%lu",
+             (unsigned long)nrf_aux_scan_cycles());
+    text3x5(64, 3, buf, 1, COL_DIM);
     if (nrf_aux_ok()) {
         if (nrf_aux_ok2() && nrf_aux_csn2() >= 0)
             snprintf(buf, sizeof(buf), "C%d+C%d", nrf_aux_csn(), nrf_aux_csn2());
