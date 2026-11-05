@@ -1412,6 +1412,43 @@ bool finder_init(void)
     return true;
 }
 
+bool finder_wifi_pause(void)
+{
+    if (!s_wifi_ok) return true;
+    esp_wifi_set_promiscuous(false);
+    esp_err_t err = esp_wifi_stop();
+    if (err == ESP_OK) {
+        s_wifi_ok = false;
+        ESP_LOGI(TAG, "Wi-Fi paused for RF scan");
+    } else {
+        ESP_LOGW(TAG, "wifi stop: %s", esp_err_to_name(err));
+    }
+    return err == ESP_OK;
+}
+
+bool finder_wifi_resume(void)
+{
+    if (s_wifi_ok) return true;
+    esp_err_t err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "wifi restart: %s", esp_err_to_name(err));
+        return false;
+    }
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    wifi_promiscuous_filter_t filter = {
+        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT |
+                       WIFI_PROMIS_FILTER_MASK_DATA |
+                       WIFI_PROMIS_FILTER_MASK_CTRL,
+    };
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(sniffer_cb);
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_channel(s_cur_ch ? s_cur_ch : 1, WIFI_SECOND_CHAN_NONE);
+    s_wifi_ok = true;
+    ESP_LOGI(TAG, "Wi-Fi resumed after RF scan");
+    return true;
+}
+
 void finder_poll(finder_view_t *v)
 {
     if (!v) return;

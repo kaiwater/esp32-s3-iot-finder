@@ -107,6 +107,8 @@ typedef struct {
 
 bool finder_init(void);
 void finder_poll(finder_view_t *v);
+bool finder_wifi_pause(void);
+bool finder_wifi_resume(void);
 
 bool finder_set_target(const uint8_t mac[6], const char *why);
 void finder_set_target_temp(const uint8_t mac[6], const char *why, uint8_t ch);

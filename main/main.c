@@ -126,6 +126,7 @@ static void menu_execute(void)
         ap_list_open();
         break;
     case UI_MENU_RFSCAN:
+        finder_wifi_pause();
         nrf_aux_scan(true);
         s_ui.page = UI_PAGE_RF_SCAN;
         break;
@@ -160,6 +161,7 @@ static void handle_event(int b)
             nrf_aux_scan(true); /* long #: restart / clear peaks */
         } else if (b == 4 || b == 14) {
             nrf_aux_scan(false);
+            finder_wifi_resume();
             s_ui.page = UI_PAGE_MENU;
         }
         return;
@@ -291,6 +293,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  timeclear             erase the persisted UTC/TSF anchor");
     ESP_LOGI("cli", "  ui ap|detail|stas|rf|help|color|find  jump to a UI page (debug)");
     ESP_LOGI("cli", "  rfdata                dump NRF scan peak/avg/age/hits");
+    ESP_LOGI("cli", "  wifioff / wifion      pause/resume ESP32 Wi-Fi (RF scan test)");
     ESP_LOGI("cli", "  theme                 cycle the 10 UI palettes");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
@@ -415,7 +418,10 @@ static void handle_line(char *line)
         }
     } else if (!strncmp(line, "ui ", 3)) {
         const char *arg = line + 3;
-        if (strcmp(arg, "rf") != 0) nrf_aux_scan(false);
+        if (strcmp(arg, "rf") != 0 && strcmp(arg, "help") != 0) {
+            nrf_aux_scan(false);
+            finder_wifi_resume();
+        }
         if (!strcmp(arg, "ap")) ap_list_open();
         else if (!strcmp(arg, "detail")) {
             if (s_ui.ap_count > 0) s_ui.page = UI_PAGE_AP_DETAIL;
@@ -423,9 +429,12 @@ static void handle_line(char *line)
             ap_sta_refresh();
             s_ui.page = UI_PAGE_AP_STAS;
         } else if (!strcmp(arg, "rf")) {
+            finder_wifi_pause();
             nrf_aux_scan(true);
             s_ui.page = UI_PAGE_RF_SCAN;
         } else if (!strcmp(arg, "help")) {
+            finder_wifi_pause();
+            nrf_aux_scan(true);
             s_ui.page = UI_PAGE_RF_HELP;
         } else if (!strcmp(arg, "color")) {
             s_ui.page = UI_PAGE_COLOR_TEST;
@@ -434,6 +443,10 @@ static void handle_line(char *line)
         } else if (!strcmp(arg, "find")) {
             s_ui.page = UI_PAGE_FIND;
         }
+    } else if (!strcmp(line, "wifioff")) {
+        finder_wifi_pause();
+    } else if (!strcmp(line, "wifion")) {
+        finder_wifi_resume();
     } else if (!strcmp(line, "theme")) {
         int t = st7735_next_theme();
         ESP_LOGI("cli", "theme %d %s", t + 1, st7735_theme_name());
