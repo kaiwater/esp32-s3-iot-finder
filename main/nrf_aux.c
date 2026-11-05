@@ -29,6 +29,7 @@ static uint32_t s_last_fail_ms;
 static uint32_t s_last_second_try_ms;
 static volatile bool s_scan;
 static volatile uint32_t s_scan_cycles;
+static uint32_t s_scan_start_ms;
 static portMUX_TYPE s_scan_mux = portMUX_INITIALIZER_UNLOCKED;
 static nrf_scan_ch_t s_scan_data[NRF_SCAN_CHANNELS];
 static uint32_t s_peak_ms[NRF_SCAN_CHANNELS];
@@ -306,6 +307,7 @@ void nrf_aux_scan(bool on)
         memset(s_peak_ms, 0, sizeof(s_peak_ms));
         memset(s_last_ms, 0, sizeof(s_last_ms));
         s_scan_cycles = 0;
+        s_scan_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
         portEXIT_CRITICAL(&s_scan_mux);
     }
     s_scan = on;
@@ -333,4 +335,10 @@ void nrf_aux_scan_get(nrf_scan_ch_t *out, int max)
 uint32_t nrf_aux_scan_cycles(void)
 {
     return s_scan_cycles;
+}
+
+uint32_t nrf_aux_scan_elapsed_ms(void)
+{
+    if (!s_scan_start_ms) return 0;
+    return (uint32_t)(esp_timer_get_time() / 1000) - s_scan_start_ms;
 }

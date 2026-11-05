@@ -927,15 +927,38 @@ static void draw_rf_scan_page(const ui_state_t *ui)
         text3x5(x + (ch < 9 ? 2 : 0), 104, num, 1, COL_DIM);
     }
 
-    int best = -1;
-    uint8_t best_peak = 0;
+    /* Keep the displayed channel stable; otherwise a slightly higher peak
+     * on another channel makes HIT x/y look like it went backwards. */
+    static int shown = -1;
+    static uint8_t shown_peak;
+    static uint32_t shown_cycles;
+    uint32_t cycles = nrf_aux_scan_cycles();
+    if (cycles < shown_cycles) {
+        shown = -1;
+        shown_peak = 0;
+    }
+    shown_cycles = cycles;
+
+    int maxch = -1;
+    uint8_t maxpeak = 0;
     for (int ch = 0; ch < NRF_SCAN_CHANNELS; ch++) {
-        if (sc[ch].peak > best_peak) {
-            best_peak = sc[ch].peak;
-            best = ch;
+        if (sc[ch].peak > maxpeak) {
+            maxpeak = sc[ch].peak;
+            maxch = ch;
         }
     }
-    if (best >= 0) {
+    if (maxch >= 0) {
+        if (shown < 0 || maxpeak > (int)shown_peak + 10) {
+            shown = maxch;
+            shown_peak = maxpeak;
+        } else {
+            shown_peak = sc[shown].peak;
+        }
+    }
+
+    if (shown >= 0 && sc[shown].peak > 0) {
+        int best = shown;
+        uint8_t best_peak = sc[shown].peak;
         uint32_t age_s = sc[best].peak_age_ms / 1000;
         if (age_s > 99) age_s = 99;
         /* Keep the original HIT x/y in the summary line. */
@@ -951,6 +974,26 @@ static void draw_rf_scan_page(const ui_state_t *ui)
         int hx = 158 - hw;
         if (hx < 112) hx = 112;
         text3x5(hx, 109, hit, 2, COL_WARN);
+
+        /* Hit rate below it: hits per second since the last scan reset. */
+        char rate[16];
+        uint32_t elapsed = nrf_aux_scan_elapsed_ms();
+        if (elapsed >= 1000 && sc[best].hits) {
+            uint32_t tenths = (uint32_t)sc[best].hits * 10000u / elapsed;
+            if (tenths >= 1000)
+                snprintf(rate, sizeof(rate), "%lu/s",
+                         (unsigned long)(tenths / 10));
+            else
+                snprintf(rate, sizeof(rate), "%lu.%lu/s",
+                         (unsigned long)(tenths / 10),
+                         (unsigned long)(tenths % 10));
+        } else {
+            snprintf(rate, sizeof(rate), "--/s");
+        }
+        int rw = (int)strlen(rate) * 4;
+        int rx = 158 - rw;
+        if (rx < 112) rx = 112;
+        text3x5(rx, 119, rate, 1, COL_DIM);
     } else {
         text3x5(2, 112, "NO ENERGY YET", 1, COL_DIM);
     }

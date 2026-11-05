@@ -33,3 +33,4 @@ void nrf_aux_scan(bool on);
 bool nrf_aux_scan_active(void);
 void nrf_aux_scan_get(nrf_scan_ch_t *out, int max);
 uint32_t nrf_aux_scan_cycles(void);
+uint32_t nrf_aux_scan_elapsed_ms(void);
