@@ -978,20 +978,23 @@ static void draw_rf_scan_page(const ui_state_t *ui)
         if (hx < 112) hx = 112;
         text3x5(hx, 109, hit, 2, COL_WARN);
 
-        /* Hit rate below it: hits per second since the last scan reset. */
-        char rate[16];
+        /* Rolling hit rate over the last 10 seconds. */
+        char rate[20];
         uint32_t elapsed = nrf_aux_scan_elapsed_ms();
-        if (elapsed >= 1000 && sc[best].hits) {
-            uint32_t tenths = (uint32_t)sc[best].hits * 10000u / elapsed;
-            if (tenths >= 1000)
-                snprintf(rate, sizeof(rate), "%lu/s",
+        uint32_t win_s = elapsed / 1000;
+        if (win_s > 10) win_s = 10;
+        if (win_s == 0) {
+            snprintf(rate, sizeof(rate), "--/s");
+        } else {
+            uint32_t tenths = (uint32_t)sc[best].hits_10s * 10u / win_s;
+            if (tenths >= 100)
+                snprintf(rate, sizeof(rate), "%luS %lu/s", (unsigned long)win_s,
                          (unsigned long)(tenths / 10));
             else
-                snprintf(rate, sizeof(rate), "%lu.%lu/s",
+                snprintf(rate, sizeof(rate), "%luS %lu.%lu/s",
+                         (unsigned long)win_s,
                          (unsigned long)(tenths / 10),
                          (unsigned long)(tenths % 10));
-        } else {
-            snprintf(rate, sizeof(rate), "--/s");
         }
         int rw = (int)strlen(rate) * 4;
         int rx = 158 - rw;
@@ -1018,6 +1021,7 @@ static void draw_rf_help_page(void)
     cjk_line(2, 70, "5. PK峰值 AGE多久前", COL_TEXT);
     cjk_line(2, 83, "6. HIT>=25%轮数", COL_TEXT);
     cjk_line(2, 96, "7. 红<80 橙>=80", COL_TEXT);
+    text3x5(2, 108, "SPEED=LAST 10S", 1, COL_DIM);
 
     text3x5(2, 119, "* BACK", 1, COL_ACCENT);
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));

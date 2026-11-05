@@ -20,6 +20,7 @@ typedef struct {
     uint8_t avg;     /* smoothed RPD duty, 0..100 */
     uint8_t last;    /* latest RPD duty, 0..100 */
     uint16_t hits;   /* sweeps with >=25% duty */
+    uint16_t hits_10s; /* hits in the last 10 seconds */
     uint16_t sweeps; /* total sweeps for this channel */
     uint8_t streak;  /* consecutive hit sweeps */
     uint8_t max_streak;
