@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -128,7 +129,12 @@ bool nrf_init(nrf_t *n, int csn_pin, int ce_pin)
             .queue_size = 1,
         };
         if (spi_bus_add_device(SPI3_HOST, &dev, &n->spi) != ESP_OK) {
-            ESP_LOGE(TAG, "no SPI device for CSN %d", csn_pin);
+            static uint32_t add_err_ms;
+            uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+            if ((uint32_t)(now - add_err_ms) >= 30000) {
+                add_err_ms = now;
+                ESP_LOGE(TAG, "no SPI device for CSN %d", csn_pin);
+            }
             return false;
         }
     }
@@ -159,7 +165,18 @@ bool nrf_init(nrf_t *n, int csn_pin, int ce_pin)
         vTaskDelay(pdMS_TO_TICKS(25));
     }
     if (!ok) {
-        ESP_LOGW(TAG, "no NRF24L01 on CSN %d", csn_pin);
+        static uint32_t miss_ms;
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        if ((uint32_t)(now - miss_ms) >= 30000) {
+            miss_ms = now;
+            ESP_LOGW(TAG, "no NRF24L01 on CSN %d", csn_pin);
+        }
+        /* Do not keep the SPI device around: another nrf_t probing the
+         * same CSN would otherwise fail to add it. */
+        if (n->spi) {
+            spi_bus_remove_device(n->spi);
+            n->spi = NULL;
+        }
         return false;
     }
 

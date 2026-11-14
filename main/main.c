@@ -21,6 +21,8 @@ static finder_view_t s_view;
 static wnm_clock_view_t s_clock;
 static ui_state_t s_ui;
 static uint32_t s_btn_ready_ms;
+static volatile uint32_t s_usb_rx_bytes;
+static volatile uint32_t s_usb_rx_lines;
 
 static void button_task(void *arg)
 {
@@ -351,6 +353,10 @@ static void print_status(void)
              (unsigned long)s_view.packets, (unsigned long)s_view.drops,
              s_view.nrf_ok, s_view.nrf_duty, csn,
              (unsigned long)esp_get_free_heap_size());
+    ESP_LOGI("cli", "usb host=%d drv=%d rx=%lu lines=%lu",
+             usb_serial_jtag_is_connected(),
+             usb_serial_jtag_is_driver_installed(),
+             (unsigned long)s_usb_rx_bytes, (unsigned long)s_usb_rx_lines);
     ESP_LOGI("cli", "vendor=%s bssid=%s ssid=%s peak=%d ap_load=%u%%/%u",
              s_view.vendor[0] ? s_view.vendor : "--", bssid,
              s_view.have_ssid ? s_view.ssid : "--", s_view.peak,
@@ -609,9 +615,12 @@ static void usb_console_task(void *arg)
     for (;;) {
         uint8_t c;
         if (usb_serial_jtag_read_bytes(&c, 1, pdMS_TO_TICKS(200)) != 1) continue;
+        s_usb_rx_bytes++;
         if (c == '\r' || c == '\n') {
             if (n) {
                 line[n] = 0;
+                s_usb_rx_lines++;
+                ESP_LOGI("cli", "usb> %s", line);
                 handle_line(line);
                 n = 0;
             }
@@ -629,7 +638,10 @@ static void usb_console_start(void)
         .tx_buffer_size = 512,
         .rx_buffer_size = 512,
     };
-    esp_err_t err = usb_serial_jtag_driver_install(&cfg);
+    esp_err_t err = ESP_OK;
+    if (!usb_serial_jtag_is_driver_installed()) {
+        err = usb_serial_jtag_driver_install(&cfg);
+    }
     if (err != ESP_OK) {
         ESP_LOGW("cli", "USB serial console unavailable: %s",
                  esp_err_to_name(err));
