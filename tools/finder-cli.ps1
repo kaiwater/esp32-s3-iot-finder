@@ -1,64 +1,179 @@
 # finder-cli.ps1 - talk to the ESP32-S3 finder over its native USB port.
 #
+# The script finds the COM port itself and reconnects when the port
+# disappears, which is what happens while a new firmware boots.
+#
 # Examples:
+#   .\finder-cli.ps1                      # auto port, interactive
+#   .\finder-cli.ps1 -ListPorts
 #   .\finder-cli.ps1 -Port COM7
-#   .\finder-cli.ps1 -Port COM7 -Command status -Seconds 2
-#   .\finder-cli.ps1 -Port COM7 -Command "btn 4"
-#   .\finder-cli.ps1 -Port COM7 -Command "btn 4 long"
+#   .\finder-cli.ps1 -Command status -Seconds 2
+#   .\finder-cli.ps1 -Command "btn 4 long"
 #
 # Interactive mode streams logs and sends a line when you press Enter.
 # Ctrl+C quits.
 
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$Port,
+    [string]$Port = "auto",
 
     [int]$Baud = 115200,
 
     [string]$Command,
 
-    [int]$Seconds = 2
+    [int]$Seconds = 2,
+
+    # How long to keep looking for the port after a disconnect.
+    # 0 = retry forever.
+    [int]$ReconnectSeconds = 30,
+
+    [switch]$ListPorts
 )
 
 $ErrorActionPreference = "Stop"
+$script:LastPort = $null
 
-$ports = [System.IO.Ports.SerialPort]::GetPortNames()
-if ($ports -notcontains $Port) {
-    Write-Host ("Port {0} not found. Available: {1}" -f $Port, ($ports -join ", "))
-    exit 1
+function Get-PortDescription([string]$name) {
+    $desc = ""
+    try {
+        $dev = Get-CimInstance -ClassName Win32_PnPEntity `
+            -Filter "Name LIKE '%$name%'" -ErrorAction Stop |
+            Select-Object -First 1
+        if ($dev) { $desc = [string]$dev.Name }
+    } catch { }
+    return $desc
 }
 
-$sp = New-Object System.IO.Ports.SerialPort -ArgumentList $Port, $Baud, "None", 8, "One"
-$sp.ReadTimeout = 200
-$sp.WriteTimeout = 1000
-$sp.NewLine = "`r`n"
-$sp.Open()
+if ($ListPorts) {
+    $names = [System.IO.Ports.SerialPort]::GetPortNames()
+    if (-not $names) {
+        Write-Host "No COM ports found."
+    } else {
+        foreach ($n in $names) {
+            $desc = Get-PortDescription $n
+            Write-Host ("{0,-8} {1}" -f $n, $desc)
+        }
+    }
+    exit 0
+}
+
+function Find-FinderPort {
+    $names = [System.IO.Ports.SerialPort]::GetPortNames()
+    $best = $null
+    $bestScore = -999
+    foreach ($n in $names) {
+        if ([string]::IsNullOrEmpty($n)) { continue }
+        $desc = Get-PortDescription $n
+        $score = 0
+        # Prefer the native USB CDC/JTAG port, de-prefer UART bridges.
+        if ($desc -match "JTAG|CDC|Serial Device") { $score += 5 }
+        if ($desc -match "CH340|CH341|CP210|FTDI|PL2303|Silicon Labs") { $score -= 10 }
+        if ($script:LastPort -and $n -eq $script:LastPort) { $score += 5 }
+        if ($score -gt $bestScore) {
+            $bestScore = $score
+            $best = $n
+        }
+    }
+    return $best
+}
+
+function Connect-Finder([string]$want, [int]$timeoutSec) {
+    if ($timeoutSec -gt 0) {
+        $deadline = (Get-Date).AddSeconds($timeoutSec)
+    } else {
+        $deadline = $null
+    }
+
+    while ($true) {
+        $name = $want
+        if ([string]::IsNullOrEmpty($name) -or $name -eq "auto") {
+            $name = Find-FinderPort
+        }
+
+        if ($name) {
+            $sp = $null
+            try {
+                $sp = New-Object System.IO.Ports.SerialPort `
+                    -ArgumentList $name, $Baud, "None", 8, "One"
+                $sp.ReadTimeout = 200
+                $sp.WriteTimeout = 1000
+                $sp.NewLine = "`r`n"
+                $sp.Open()
+                $script:LastPort = $name
+                Write-Host ("[finder] connected {0}" -f $name)
+                return $sp
+            } catch {
+                if ($sp) {
+                    try { $sp.Dispose() } catch { }
+                }
+            }
+        }
+
+        if ($null -ne $deadline -and (Get-Date) -gt $deadline) {
+            Write-Host "[finder] no COM port found (use -ListPorts)"
+            return $null
+        }
+        Start-Sleep -Milliseconds 400
+    }
+}
+
+function Close-Finder($sp) {
+    if ($sp) {
+        try { $sp.Close() } catch { }
+        try { $sp.Dispose() } catch { }
+    }
+}
+
+$sp = Connect-Finder $Port $ReconnectSeconds
+if (-not $sp) { exit 1 }
 
 try {
     if ($Command) {
-        $sp.WriteLine($Command)
+        $reconnects = 0
         $deadline = (Get-Date).AddSeconds($Seconds)
+        $send = $true
+
         while ((Get-Date) -lt $deadline) {
-            if ($sp.BytesToRead -gt 0) {
-                Write-Host -NoNewline $sp.ReadExisting()
-            } else {
-                Start-Sleep -Milliseconds 50
+            try {
+                if ($send) {
+                    $sp.WriteLine($Command)
+                    $send = $false
+                }
+                if ($sp.BytesToRead -gt 0) {
+                    Write-Host -NoNewline $sp.ReadExisting()
+                } else {
+                    Start-Sleep -Milliseconds 50
+                }
+            } catch {
+                Close-Finder $sp
+                $reconnects++
+                if ($reconnects -gt 3) {
+                    Write-Host ""
+                    Write-Host "[finder] giving up after 3 reconnects"
+                    exit 1
+                }
+                Write-Host ""
+                Write-Host "[finder] link lost, waiting for the port..."
+                $sp = Connect-Finder $Port $ReconnectSeconds
+                if (-not $sp) { exit 1 }
+                # The device usually rebooted: send the command again.
+                $send = $true
+                $deadline = (Get-Date).AddSeconds($Seconds)
             }
         }
         Write-Host ""
     } else {
-        Write-Host ("Connected to {0}. Type a command and press Enter. Ctrl+C quits." -f $Port)
+        Write-Host "Connected. Type a command and press Enter. Ctrl+C quits."
 
         $keyboard = $true
         try { [void][Console]::KeyAvailable } catch { $keyboard = $false }
 
-        if ($keyboard) {
-            $typed = ""
-            while ($true) {
+        $typed = ""
+        while ($true) {
+            try {
                 while ($sp.BytesToRead -gt 0) {
                     Write-Host -NoNewline $sp.ReadExisting()
                 }
-                if ([Console]::KeyAvailable) {
+                if ($keyboard -and [Console]::KeyAvailable) {
                     $key = [Console]::ReadKey($true)
                     if ($key.Key -eq "Enter") {
                         Write-Host ""
@@ -73,19 +188,21 @@ try {
                         $typed += $key.KeyChar
                         Write-Host -NoNewline $key.KeyChar
                     }
+                } elseif (-not $keyboard) {
+                    $line = Read-Host "finder"
+                    if ($line.Length -gt 0) { $sp.WriteLine($line) }
                 }
                 Start-Sleep -Milliseconds 20
-            }
-        } else {
-            while ($true) {
-                if ($sp.BytesToRead -gt 0) {
-                    Write-Host -NoNewline $sp.ReadExisting()
-                }
-                $line = Read-Host "finder"
-                if ($line.Length -gt 0) { $sp.WriteLine($line) }
+            } catch {
+                Close-Finder $sp
+                Write-Host ""
+                Write-Host "[finder] port lost, reconnecting... (Ctrl+C quits)"
+                $sp = Connect-Finder $Port 0
+                if (-not $sp) { break }
+                $typed = ""
             }
         }
     }
 } finally {
-    if ($sp.IsOpen) { $sp.Close() }
+    Close-Finder $sp
 }
