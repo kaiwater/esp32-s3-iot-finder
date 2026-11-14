@@ -10,6 +10,7 @@
 void st7735_init(void);
 int st7735_next_theme(void);
 int st7735_theme(void);
+int st7735_rf_shown_channel(void);
 const char *st7735_theme_name(void);
 typedef enum {
     UI_PAGE_FIND = 0,

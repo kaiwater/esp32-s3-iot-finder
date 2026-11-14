@@ -883,6 +883,13 @@ static void draw_menu_page(const finder_view_t *v, const ui_state_t *ui)
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
 }
 
+static int s_rf_shown = -1;
+
+int st7735_rf_shown_channel(void)
+{
+    return s_rf_shown;
+}
+
 static void draw_rf_scan_page(const ui_state_t *ui)
 {
     (void)ui;
@@ -969,6 +976,7 @@ static void draw_rf_scan_page(const ui_state_t *ui)
             shown_peak = sc[shown].peak;
         }
     }
+    s_rf_shown = shown;
 
     /* Top-right readout state: stays "--" until the first peak. */
     char hit_s[8] = "--";

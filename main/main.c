@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/uart.h"
@@ -297,6 +298,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  wifioff / wifion      pause/resume ESP32 Wi-Fi (RF scan test)");
     ESP_LOGI("cli", "  btn 1..4 [long]       emulate a short/long K1..K4 press");
     ESP_LOGI("cli", "  page                  print the current UI page");
+    ESP_LOGI("cli", "  stream [ms]           periodic RF/status line (0=off, default 1000)");
     ESP_LOGI("cli", "  theme                 cycle the 10 UI palettes");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
@@ -341,8 +343,9 @@ static void print_status(void)
         snprintf(csn, sizeof(csn), "%d+%d", s_view.nrf_csn, s_view.nrf_csn2);
     else if (s_view.nrf_ok)
         snprintf(csn, sizeof(csn), "%d", s_view.nrf_csn);
-    ESP_LOGI("cli", "wifi=%d target=%s rssi=%d fps=%lu ch=%u mode=%d state=%d cand=%lu pkt=%lu drop=%lu nrf=%d/%u%% csn=%s heap=%lu",
-             s_view.wifi_ok, mac, s_view.have_rssi ? s_view.rssi : -100,
+    ESP_LOGI("cli", "wifi=%d usb=%d target=%s rssi=%d fps=%lu ch=%u mode=%d state=%d cand=%lu pkt=%lu drop=%lu nrf=%d/%u%% csn=%s heap=%lu",
+             s_view.wifi_ok, usb_serial_jtag_is_connected(),
+             mac, s_view.have_rssi ? s_view.rssi : -100,
              (unsigned long)s_view.fps, s_view.channel, s_view.chan_mode,
              s_view.link, (unsigned long)s_view.cand_count,
              (unsigned long)s_view.packets, (unsigned long)s_view.drops,
@@ -354,6 +357,71 @@ static void print_status(void)
              s_view.have_ap_load ? (unsigned)((s_view.ap_load * 100u + 127u) / 255u) : 0,
              s_view.ap_sta_count);
     print_clock();
+}
+
+static uint32_t s_stream_ms;
+static uint32_t s_stream_next;
+
+static void stream_set(uint32_t ms)
+{
+    s_stream_ms = ms;
+    s_stream_next = (uint32_t)(esp_timer_get_time() / 1000) + ms;
+}
+
+/* Compact one-line telemetry for the PC, independent of what the screen
+ * shows.  RF SCAN data wins when the NRF scan is running. */
+static void stream_emit(void)
+{
+    if (nrf_aux_scan_active()) {
+        nrf_scan_ch_t sc[NRF_SCAN_CHANNELS];
+        nrf_aux_scan_get(sc, NRF_SCAN_CHANNELS);
+
+        int ch = st7735_rf_shown_channel();
+        if (ch < 0 || ch >= NRF_SCAN_CHANNELS || sc[ch].peak == 0) {
+            ch = -1;
+            for (int i = 0; i < NRF_SCAN_CHANNELS; i++) {
+                if (ch < 0 || sc[i].peak > sc[ch].peak) ch = i;
+            }
+            if (ch >= 0 && sc[ch].peak == 0) ch = -1;
+        }
+
+        uint32_t win = nrf_aux_scan_elapsed_ms() / 1000;
+        if (win > 10) win = 10;
+
+        if (ch < 0) {
+            ESP_LOGI("stream", "rf S=%lu ch=-- pk=0 rate=0.0/s win=%lus",
+                     (unsigned long)nrf_aux_scan_cycles(), (unsigned long)win);
+            return;
+        }
+
+        uint32_t rate10 = win ? (uint32_t)sc[ch].hits_10s * 10u / win : 0;
+        ESP_LOGI("stream",
+                 "rf S=%lu ch=%d pk=%u hit=%u/%u h10=%u rate=%lu.%lu/s win=%lus age=%lus",
+                 (unsigned long)nrf_aux_scan_cycles(), ch + 1, sc[ch].peak,
+                 sc[ch].hits, sc[ch].sweeps, sc[ch].hits_10s,
+                 (unsigned long)(rate10 / 10), (unsigned long)(rate10 % 10),
+                 (unsigned long)win, (unsigned long)(sc[ch].peak_age_ms / 1000));
+        return;
+    }
+
+    char mac[18] = "--";
+    if (s_view.have_target) {
+        snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 s_view.target[0], s_view.target[1], s_view.target[2],
+                 s_view.target[3], s_view.target[4], s_view.target[5]);
+    }
+    char bssid[18] = "--";
+    if (s_view.have_bssid) {
+        snprintf(bssid, sizeof(bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 s_view.bssid[0], s_view.bssid[1], s_view.bssid[2],
+                 s_view.bssid[3], s_view.bssid[4], s_view.bssid[5]);
+    }
+    ESP_LOGI("stream",
+             "find target=%s bssid=%s rssi=%d fps=%lu ch=%u mode=%d state=%d cand=%lu pkt=%lu",
+             mac, bssid, s_view.have_rssi ? s_view.rssi : -100,
+             (unsigned long)s_view.fps, s_view.channel, s_view.chan_mode,
+             s_view.link, (unsigned long)s_view.cand_count,
+             (unsigned long)s_view.packets);
 }
 
 static const char *page_name(int page)
@@ -475,6 +543,15 @@ static void handle_line(char *line)
         } else {
             ESP_LOGW("cli", "usage: btn 1..4 [long]");
         }
+    } else if (!strncmp(line, "stream", 6)) {
+        const char *arg = line + 6;
+        while (*arg == ' ') arg++;
+        uint32_t ms = 1000;
+        if (*arg) ms = (uint32_t)strtoul(arg, NULL, 10);
+        if (ms && ms < 100) ms = 100;
+        stream_set(ms);
+        ESP_LOGI("cli", "stream %s (%lu ms)",
+                 ms ? "on" : "off", (unsigned long)ms);
     } else if (!strcmp(line, "page")) {
         ESP_LOGI("cli", "page=%s(%d) menu_sel=%d theme=%d wifi=%d",
                  page_name(s_ui.page), (int)s_ui.page, s_ui.menu_sel,
@@ -631,6 +708,13 @@ void app_main(void)
             s_view.nrf_csn2 = (int8_t)nrf_aux_csn2();
             s_view.nrf_duty = nrf_aux_duty();
         }
+        if (s_stream_ms && (int32_t)(now - s_stream_next) >= 0) {
+            s_stream_next += s_stream_ms;
+            if ((int32_t)(now - s_stream_next) >= 0)
+                s_stream_next = now + s_stream_ms;
+            stream_emit();
+        }
+
         if (now - last_draw >= 100) {
             last_draw = now;
             wnm_clock_poll(&s_clock);

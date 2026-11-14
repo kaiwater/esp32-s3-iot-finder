@@ -157,8 +157,20 @@ status                  打印当前状态
 reboot                  重启
 btn 1..4 [long]         模拟 K1..K4 短按/长按
 page                    打印当前 UI 页、菜单项、主题、Wi-Fi 状态
+stream [ms]             周期性输出 RF/状态行（0=关闭，默认 1000ms）
 help                    帮助
 ```
+
+`stream` 默认关闭，开启后每秒（可改）输出一行，和屏幕无关：
+
+```text
+rf S=1155 ch=2 pk=100 hit=351/1155 h10=19 rate=1.9/s win=10s age=7s
+```
+
+- `rate` 就是屏幕右上角的 `/s`（最近 10 秒滚动命中率）
+- 不在 RF SCAN 时输出 `find target=... rssi=... fps=...`
+- `status` 里的 `usb=` 表示原生 USB 口是否被主机枚举
+
 
 ### 第二个 USB 口：原生 USB 双控制台
 
@@ -182,16 +194,21 @@ help                    帮助
 
 - 图形串口工具（PuTTY / Tera Term）：选 `COMx`，**115200 8-N-1，无流控**，
   原生 USB 是 CDC，波特率不影响，但填 115200 最省事
-- 仓库自带脚本 `tools/finder-cli.ps1`：
+- 仓库自带脚本 `tools/finder-cli.ps1`，**默认自动找口并自动重连**：
 
 ```powershell
-.\tools\finder-cli.ps1 -Port COM7
-.\tools\finder-cli.ps1 -Port COM7 -Command status -Seconds 2
-.\tools\finder-cli.ps1 -Port COM7 -Command "btn 3"
-.\tools\finder-cli.ps1 -Port COM7 -Command "btn 4 long"
+.\tools\finder-cli.ps1 -ListPorts        # 列出 COM 口和描述
+.\tools\finder-cli.ps1                   # 自动选口，交互模式
+.\tools\finder-cli.ps1 -Command status -Seconds 2
+.\tools\finder-cli.ps1 -Command "btn 3"
+.\tools\finder-cli.ps1 -Command "btn 4 long"
 ```
 
-不加 `-Command` 时是交互模式：一直显示日志，输入命令回车发送，Ctrl+C 退出。
+- 不加 `-Port` 时自动挑口：优先 USB CDC/JTAG，规避 CH340/CP210/FTDI 这类 UART 桥
+- **烧录/重启后口消失会自动等待重连**（默认最多等 30 秒，`-ReconnectSeconds 0` 表示一直等）
+- 重连后如果 COM 号变了，会重新扫描，不需要改参数
+- 一条命令模式在断线重连后会自动重发当前命令（最多 3 次）
+- 不加 `-Command` 时是交互模式：一直显示日志，输入命令回车发送，Ctrl+C 退出；断线会自动接上
 
 - PowerShell 直接发一条命令（不装任何东西）：
 
