@@ -48,6 +48,8 @@ static uint8_t s_mw_bin_idx;
 static uint32_t s_mw_bin_last_s;
 static volatile bool s_pro;
 static nrf_pro_ch_t s_pro_data[NRF_PRO_CHANNELS];
+static uint8_t s_pro_heat[NRF_PRO_CHANNELS];
+static uint32_t s_pro_heat_ms[NRF_PRO_CHANNELS];
 static uint32_t s_pro_cycles;
 static uint32_t s_pro_start_ms;
 #define RF_HIT_PCT 25u
@@ -207,10 +209,30 @@ static void mw_store(uint8_t pct)
     portEXIT_CRITICAL(&s_scan_mux);
 }
 
+/* Recent-activity fade: half-life 4 s, linear between halves.  A one-off
+ * 100% hit is still visible after ~12 s, then disappears. */
+static uint8_t pro_heat_decay(uint8_t heat, uint32_t dt_ms)
+{
+    if (!heat) return 0;
+    while (dt_ms >= 4000 && heat) {
+        heat = (uint8_t)(heat / 2);
+        dt_ms -= 4000;
+    }
+    if (!heat) return 0;
+    return (uint8_t)((uint32_t)heat * (8000u - dt_ms) / 8000u);
+}
+
 static void pro_store(int rf, uint8_t pct)
 {
     portENTER_CRITICAL(&s_scan_mux);
     nrf_pro_ch_t *c = &s_pro_data[rf];
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    uint32_t dt = s_pro_heat_ms[rf] ? now - s_pro_heat_ms[rf] : 0xFFFFFFFFu;
+    uint8_t heat = pro_heat_decay(s_pro_heat[rf], dt);
+    if (pct > heat) heat = pct;
+    s_pro_heat[rf] = heat;
+    s_pro_heat_ms[rf] = now;
+
     c->last = pct;
     c->sweeps++;
     if (pct >= RF_HIT_PCT) c->hits++;
@@ -536,6 +558,8 @@ void nrf_aux_pro_reset(void)
 {
     portENTER_CRITICAL(&s_scan_mux);
     memset(s_pro_data, 0, sizeof(s_pro_data));
+    memset(s_pro_heat, 0, sizeof(s_pro_heat));
+    memset(s_pro_heat_ms, 0, sizeof(s_pro_heat_ms));
     s_pro_cycles = 0;
     s_pro_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     portEXIT_CRITICAL(&s_scan_mux);
@@ -567,7 +591,12 @@ void nrf_aux_pro_get(nrf_pro_ch_t *out, int max)
 {
     if (!out || max <= 0) return;
     if (max > NRF_PRO_CHANNELS) max = NRF_PRO_CHANNELS;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     portENTER_CRITICAL(&s_scan_mux);
     memcpy(out, s_pro_data, (size_t)max * sizeof(*out));
+    for (int i = 0; i < max; i++) {
+        uint32_t dt = s_pro_heat_ms[i] ? now - s_pro_heat_ms[i] : 0;
+        out[i].heat = pro_heat_decay(s_pro_heat[i], dt);
+    }
     portEXIT_CRITICAL(&s_scan_mux);
 }

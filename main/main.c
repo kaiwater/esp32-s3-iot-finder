@@ -173,6 +173,7 @@ static void menu_execute(void)
         nrf_aux_pro(true);
         s_pro_printed = 0;
         s_ui.pro_scroll = 0;
+        s_ui.pro_view = 0;
         s_ui.page = UI_PAGE_RF_PRO;
         ESP_LOGI("pro", "start: 2400..2525MHz step 1MHz, S=sweep");
         break;
@@ -223,6 +224,8 @@ static void handle_event(int b)
             int max = NRF_PRO_CHANNELS - 76;
             if (s_ui.pro_scroll > max) s_ui.pro_scroll = max;
         } else if (b == 3) {
+            s_ui.pro_view = s_ui.pro_view ? 0 : 1;
+            ESP_LOGI("pro", "view %s", s_ui.pro_view ? "PEAK" : "ACTIVITY");
             pro_print_list();
         } else if (b == 13) {
             nrf_aux_pro_reset();
@@ -575,10 +578,12 @@ static void pro_print_spectrum(uint32_t cycles)
     static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
     nrf_aux_pro_get(d, NRF_PRO_CHANNELS);
 
+    int view = s_ui.pro_view ? 1 : 0;
     char line[160];
-    int o = snprintf(line, sizeof(line), "pro S=%lu 2400:", (unsigned long)cycles);
+    int o = snprintf(line, sizeof(line), "pro S=%lu %s 2400:",
+                     (unsigned long)cycles, view ? "pk" : "act");
     for (int i = 0; i < NRF_PRO_CHANNELS && o + 1 < (int)sizeof(line); i++) {
-        int lv = d[i].peak / 10;
+        int lv = (view ? d[i].peak : d[i].heat) / 10;
         if (lv > 9) lv = 9;
         line[o++] = (char)('0' + lv);
     }
@@ -627,11 +632,17 @@ static void stream_emit(void)
     if (nrf_aux_pro_active()) {
         static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
         nrf_aux_pro_get(d, NRF_PRO_CHANNELS);
+        int view = s_ui.pro_view ? 1 : 0;
         int top = 0;
-        for (int i = 1; i < NRF_PRO_CHANNELS; i++)
-            if (d[i].peak > d[top].peak) top = i;
-        ESP_LOGI("stream", "pro S=%lu top=%uMHz pk=%u%%",
-                 (unsigned long)nrf_aux_pro_cycles(), 2400 + top, d[top].peak);
+        for (int i = 1; i < NRF_PRO_CHANNELS; i++) {
+            uint8_t a = view ? d[i].peak : d[i].heat;
+            uint8_t b = view ? d[top].peak : d[top].heat;
+            if (a > b) top = i;
+        }
+        uint8_t val = view ? d[top].peak : d[top].heat;
+        ESP_LOGI("stream", "pro S=%lu %s top=%uMHz %s=%u%%",
+                 (unsigned long)nrf_aux_pro_cycles(), view ? "pk" : "act",
+                 2400 + top, view ? "pk" : "act", val);
         return;
     }
 
@@ -830,6 +841,7 @@ static void handle_line(char *line)
             nrf_aux_pro(true);
             s_pro_printed = 0;
             s_ui.pro_scroll = 0;
+            s_ui.pro_view = 0;
             s_ui.page = UI_PAGE_RF_PRO;
             ESP_LOGI("pro", "start: 2400..2525MHz step 1MHz, S=sweep");
         } else if (!strcmp(arg, "help")) {
@@ -922,6 +934,7 @@ static void handle_line(char *line)
         nrf_aux_pro(true);
         s_pro_printed = 0;
         s_ui.pro_scroll = 0;
+        s_ui.pro_view = 0;
         s_ui.page = UI_PAGE_RF_PRO;
         ESP_LOGI("pro", "start: 2400..2525MHz step 1MHz, S=sweep");
     } else if (!strcmp(line, "pro off")) {

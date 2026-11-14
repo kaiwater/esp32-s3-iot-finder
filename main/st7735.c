@@ -1062,12 +1062,14 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     int scroll = ui->pro_scroll;
     if (scroll < 0) scroll = 0;
     if (scroll > NRF_PRO_CHANNELS - PRO_VIS) scroll = NRF_PRO_CHANNELS - PRO_VIS;
+    int view = ui->pro_view ? 1 : 0;
 
     char buf[48];
     clear_panel();
     text3x5(2, 2, "RF SCAN PRO", 2, COL_ACCENT);
-    snprintf(buf, sizeof(buf), "%luMHz", (unsigned long)nrf_aux_pro_cycles());
-    text3x5_right(158, 3, buf, 1, COL_DIM);
+    text3x5_right(158, 3, view ? "PEAK" : "ACT", 1, COL_DIM);
+    snprintf(buf, sizeof(buf), "S=%lu", (unsigned long)nrf_aux_pro_cycles());
+    text3x5(2, 14, buf, 1, COL_DIM);
 
     const int top = 24, bottom = 100, x0 = 2;
     rect(x0, top, PRO_VIS * 2, bottom - top, COL_RF_BG);
@@ -1075,11 +1077,13 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         int ch = scroll + i;
         if (ch >= NRF_PRO_CHANNELS) break;
         int x = x0 + i * 2;
-        uint8_t pk = d[ch].peak;
-        if (!pk) continue;
-        int h = (bottom - top) * pk / 100;
+        uint8_t val = view ? d[ch].peak : d[ch].heat;
+        if (!val) continue;
+        int h = (bottom - top) * val / 100;
         if (h < 1) h = 1;
-        rect(x, bottom - h, 1, h, pk >= 80 ? COL_RF_HOT : COL_RF_PEAK);
+        uint16_t col = val >= 80 ? COL_RF_HOT :
+                       (view ? COL_RF_PEAK : (val >= 50 ? COL_WARN : COL_RF_PEAK));
+        rect(x, bottom - h, 1, h, col);
     }
 
     /* MHz labels at the window edges plus a small scroll bar. */
@@ -1096,17 +1100,20 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     for (int i = 0; i < PRO_VIS; i++) {
         int ch = scroll + i;
         if (ch >= NRF_PRO_CHANNELS) break;
-        if (best < 0 || d[ch].peak > d[best].peak) best = ch;
+        uint8_t val = view ? d[ch].peak : d[ch].heat;
+        uint8_t bv = best < 0 ? 0 : (view ? d[best].peak : d[best].heat);
+        if (best < 0 || val > bv) best = ch;
     }
-    if (best >= 0 && d[best].peak) {
-        snprintf(buf, sizeof(buf), "PK %u%% @ %uMHz", d[best].peak,
-                 2400 + best);
+    uint8_t best_val = best < 0 ? 0 : (view ? d[best].peak : d[best].heat);
+    if (best >= 0 && best_val) {
+        snprintf(buf, sizeof(buf), "%s %u%% @ %uMHz", view ? "PK" : "ACT",
+                 best_val, 2400 + best);
         text3x5(2, 114, buf, 1, COL_WARN);
     } else {
         text3x5(2, 114, "NO ENERGY YET", 1, COL_DIM);
     }
 
-    text3x5(2, 121, "<> SCROLL  # LIST  * BACK", 1, COL_ACCENT);
+    text3x5(2, 121, "# VIEW  HOLD# RESET  * BACK", 1, COL_ACCENT);
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
 }

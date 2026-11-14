@@ -61,6 +61,7 @@ uint32_t nrf_aux_mw_elapsed_ms(void);
 
 typedef struct {
     uint8_t peak;    /* max RPD duty, 0..100 */
+    uint8_t heat;    /* decayed recent activity, 0..100 */
     uint8_t last;    /* latest RPD duty */
     uint8_t avg;     /* smoothed RPD duty */
     uint16_t hits;   /* visits with >=25% duty */
