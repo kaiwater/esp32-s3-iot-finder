@@ -288,6 +288,16 @@ static void text3x5(int x, int y, const char *s, int scale, uint16_t color)
     }
 }
 
+/* Right-align a 3x5 string whose last pixel column ends at x_right. */
+static void text3x5_right(int x_right, int y, const char *s, int scale,
+                          uint16_t color)
+{
+    int w = (int)strlen(s) * 4 * scale - scale;
+    int x = x_right - w;
+    if (x < 0) x = 0;
+    text3x5(x, y, s, scale, color);
+}
+
 /* 2x5 numeric font for the service clock and other low-priority counters.
  * Three pixels per character including the gap, so a HH:MM clock fits in
  * the header without competing with the main RSSI display. */
@@ -882,19 +892,20 @@ static void draw_rf_scan_page(const ui_state_t *ui)
     char buf[64];
     clear_panel();
     text3x5(2, 2, "RF SCAN", 2, COL_ACCENT);
-    snprintf(buf, sizeof(buf), "S%lu",
-             (unsigned long)nrf_aux_scan_cycles());
-    text3x5(64, 3, buf, 1, COL_DIM);
+    unsigned long cycles_shown = (unsigned long)nrf_aux_scan_cycles();
+    if (cycles_shown > 99999) cycles_shown = 99999; /* keep S inside its slot */
+    snprintf(buf, sizeof(buf), "S%lu", cycles_shown);
+    text3x5_right(84, 20, buf, 1, COL_DIM);
     if (nrf_aux_ok()) {
         if (nrf_aux_ok2() && nrf_aux_csn2() >= 0)
             snprintf(buf, sizeof(buf), "C%d+C%d", nrf_aux_csn(), nrf_aux_csn2());
         else
             snprintf(buf, sizeof(buf), "C%d", nrf_aux_csn());
-        text3x5(108, 3, buf, 1, COL_ACCENT);
+        text3x5_right(112, 20, buf, 1, COL_ACCENT);
     } else {
-        text3x5(118, 3, "NRF --", 1, COL_DIM);
+        text3x5_right(112, 20, "NRF --", 1, COL_DIM);
     }
-    rect(0, 12, WIDTH, 1, COL_DARK);
+    rect(0, 29, WIDTH, 1, COL_DARK);
 
     if (!nrf_aux_ok()) {
         text3x5(4, 38, "NRF NOT FOUND", 1, COL_WARN);
@@ -905,7 +916,7 @@ static void draw_rf_scan_page(const ui_state_t *ui)
         return;
     }
 
-    const int x0 = 8, bw = 8, gap = 3, top = 22, bottom = 100;
+    const int x0 = 8, bw = 8, gap = 3, top = 31, bottom = 100;
     for (int ch = 0; ch < NRF_SCAN_CHANNELS; ch++) {
         int x = x0 + ch * (bw + gap);
         int peak = sc[ch].peak;
@@ -959,8 +970,16 @@ static void draw_rf_scan_page(const ui_state_t *ui)
         }
     }
 
+    /* Top-right readout state: stays "--" until the first peak. */
+    char hit_s[8] = "--";
+    char rate_s[16] = "--/s";
+    bool has_hit = false;
+    bool has_rate = false;
+    uint32_t rate_win = 0;
+
     if (shown >= 0 && sc[shown].peak > 0) {
         int best = shown;
+        has_hit = true;
         uint8_t best_peak = sc[shown].peak;
         uint32_t age_s = sc[best].peak_age_ms / 1000;
         if (age_s > 99) age_s = 99;
@@ -970,38 +989,47 @@ static void draw_rf_scan_page(const ui_state_t *ui)
                  sc[best].hits, sc[best].sweeps);
         text3x5(2, 112, buf, 1, COL_WARN);
 
-        /* New role: the x of HIT x/y (hit count), 2x and right-aligned. */
-        char hit[8];
-        snprintf(hit, sizeof(hit), "%u", sc[best].hits);
-        int hw = (int)strlen(hit) * 8;
-        int hx = 158 - hw;
-        if (hx < 112) hx = 112;
-        text3x5(hx, 109, hit, 2, COL_WARN);
-
-        /* Rolling hit rate over the last 10 seconds. */
-        char rate[20];
+        /* The hit count and its rate go to the top-right, enlarged. */
+        snprintf(hit_s, sizeof(hit_s), "%u", sc[best].hits);
         uint32_t elapsed = nrf_aux_scan_elapsed_ms();
         uint32_t win_s = elapsed / 1000;
         if (win_s > 10) win_s = 10;
         if (win_s == 0) {
-            snprintf(rate, sizeof(rate), "--/s");
+            has_rate = false;
+            snprintf(rate_s, sizeof(rate_s), "--/s");
         } else {
+            has_rate = true;
             uint32_t tenths = (uint32_t)sc[best].hits_10s * 10u / win_s;
             if (tenths >= 100)
-                snprintf(rate, sizeof(rate), "%luS %lu/s", (unsigned long)win_s,
+                snprintf(rate_s, sizeof(rate_s), "%lu/s",
                          (unsigned long)(tenths / 10));
             else
-                snprintf(rate, sizeof(rate), "%luS %lu.%lu/s",
-                         (unsigned long)win_s,
+                snprintf(rate_s, sizeof(rate_s), "%lu.%lu/s",
                          (unsigned long)(tenths / 10),
                          (unsigned long)(tenths % 10));
         }
-        int rw = (int)strlen(rate) * 4;
-        int rx = 158 - rw;
-        if (rx < 112) rx = 112;
-        text3x5(rx, 119, rate, 1, COL_DIM);
+        rate_win = win_s;
     } else {
         text3x5(2, 112, "NO ENERGY YET", 1, COL_DIM);
+    }
+
+    /* Rolling rate on top (the more useful number), hit count below. */
+    {
+        int rl = (int)strlen(rate_s);
+        int rs = rl <= 8 ? 3 : 2;
+        int rw = rl * 4 * rs - rs;
+        text3x5_right(158, rs == 3 ? 1 : 3, rate_s, rs, COL_WARN);
+        if (has_rate && 158 - rw >= 78) {
+            char win[8];
+            snprintf(win, sizeof(win), "%luS", (unsigned long)rate_win);
+            text3x5(158 - rw - 16, rs == 3 ? 6 : 7, win, 1, COL_DIM);
+        }
+
+        int hl = (int)strlen(hit_s);
+        int hs = hl <= 5 ? 2 : 1;
+        text3x5_right(158, hs == 2 ? 17 : 20, hit_s, hs, COL_ACCENT);
+        if (has_hit && 158 - hl * 4 * hs + hs >= 130)
+            text3x5(158 - hl * 4 * hs + hs - 16, 20, "HIT", 1, COL_DIM);
     }
     text3x5(2, 119, "# HELP  HOLD# RESET  * BACK", 1, COL_ACCENT);
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
