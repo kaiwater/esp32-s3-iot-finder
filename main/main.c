@@ -12,6 +12,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "finder.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "nrf_aux.h"
 #include "st7735.h"
 #include "wnm_clock.h"
@@ -302,6 +304,9 @@ static void print_help(void)
     ESP_LOGI("cli", "  btn 1..4 [long]       emulate a short/long K1..K4 press");
     ESP_LOGI("cli", "  page                  print the current UI page");
     ESP_LOGI("cli", "  stream [ms]           periodic RF/status line (0=off, default 1000)");
+    ESP_LOGI("cli", "  fmt [template|reset]  show/set the saved RF line template");
+    ESP_LOGI("cli", "      %%S cycles  %%c ch  %%p peak  %%h hits  %%t sweeps");
+    ESP_LOGI("cli", "      %%0 hits/10s  %%r rate  %%w window  %%a age");
     ESP_LOGI("cli", "  theme                 cycle the 10 UI palettes");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
@@ -366,13 +371,109 @@ static void print_status(void)
     print_clock();
 }
 
-static uint32_t s_stream_ms;
+#define RF_FMT_DEFAULT \
+    "rf S=%S ch=%c pk=%p hit=%h/%t h10=%0  [rate=%r/s] win=%ws age=%as"
+
+static char s_rf_fmt[120] = RF_FMT_DEFAULT;
+
+static uint32_t s_stream_ms = 1000;
 static uint32_t s_stream_next;
+
+static void config_save_str(const char *key, const char *val)
+{
+    nvs_handle_t h;
+    if (nvs_open("finder", NVS_READWRITE, &h) == ESP_OK) {
+        if (nvs_set_str(h, key, val) == ESP_OK) nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static void config_save_u32(const char *key, uint32_t val)
+{
+    nvs_handle_t h;
+    if (nvs_open("finder", NVS_READWRITE, &h) == ESP_OK) {
+        if (nvs_set_u32(h, key, val) == ESP_OK) nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static void config_load(void)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    if (err != ESP_OK) return;
+
+    nvs_handle_t h;
+    if (nvs_open("finder", NVS_READONLY, &h) != ESP_OK) return;
+
+    size_t len = sizeof(s_rf_fmt);
+    if (nvs_get_str(h, "rf_fmt", s_rf_fmt, &len) != ESP_OK)
+        snprintf(s_rf_fmt, sizeof(s_rf_fmt), "%s", RF_FMT_DEFAULT);
+
+    uint32_t ms = 1000;
+    if (nvs_get_u32(h, "stream_ms", &ms) != ESP_OK) ms = 1000;
+    s_stream_ms = ms;
+    nvs_close(h);
+}
 
 static void stream_set(uint32_t ms)
 {
     s_stream_ms = ms;
     s_stream_next = (uint32_t)(esp_timer_get_time() / 1000) + ms;
+}
+
+/* Expand the user template for one RF sample.  Unknown escapes are kept
+ * literally so a typo is visible instead of silently dropped. */
+static void rf_format_line(char *out, size_t cap, const nrf_scan_ch_t *sc,
+                           int ch, uint32_t cycles, uint32_t win)
+{
+    size_t o = 0;
+    uint32_t rate10 = 0;
+    if (ch >= 0 && win) rate10 = (uint32_t)sc[ch].hits_10s * 10u / win;
+
+    for (const char *p = s_rf_fmt; *p && o + 1 < cap; p++) {
+        if (*p != '%') {
+            out[o++] = *p;
+            continue;
+        }
+        p++;
+        if (!*p) break;
+
+        char fld[24];
+        switch (*p) {
+        case '%': snprintf(fld, sizeof(fld), "%%"); break;
+        case 'S': snprintf(fld, sizeof(fld), "%lu",
+                           (unsigned long)cycles); break;
+        case 'c':
+            if (ch < 0) snprintf(fld, sizeof(fld), "--");
+            else snprintf(fld, sizeof(fld), "%d", ch + 1);
+            break;
+        case 'p': snprintf(fld, sizeof(fld), "%u", ch < 0 ? 0 : sc[ch].peak); break;
+        case 'h': snprintf(fld, sizeof(fld), "%u", ch < 0 ? 0 : sc[ch].hits); break;
+        case 't': snprintf(fld, sizeof(fld), "%u", ch < 0 ? 0 : sc[ch].sweeps); break;
+        case '0': snprintf(fld, sizeof(fld), "%u", ch < 0 ? 0 : sc[ch].hits_10s); break;
+        case 'r': snprintf(fld, sizeof(fld), "%lu.%lu",
+                           (unsigned long)(rate10 / 10),
+                           (unsigned long)(rate10 % 10)); break;
+        case 'w': snprintf(fld, sizeof(fld), "%lu", (unsigned long)win); break;
+        case 'a': snprintf(fld, sizeof(fld), "%lu",
+                           ch < 0 ? 0 : (unsigned long)(sc[ch].peak_age_ms / 1000)); break;
+        default:
+            fld[0] = '%';
+            fld[1] = *p;
+            fld[2] = 0;
+            break;
+        }
+
+        size_t l = strlen(fld);
+        if (o + l >= cap) l = cap - o - 1;
+        memcpy(out + o, fld, l);
+        o += l;
+    }
+    out[o] = 0;
 }
 
 /* Compact one-line telemetry for the PC, independent of what the screen
@@ -395,19 +496,9 @@ static void stream_emit(void)
         uint32_t win = nrf_aux_scan_elapsed_ms() / 1000;
         if (win > 10) win = 10;
 
-        if (ch < 0) {
-            ESP_LOGI("stream", "rf S=%lu ch=-- pk=0 rate=0.0/s win=%lus",
-                     (unsigned long)nrf_aux_scan_cycles(), (unsigned long)win);
-            return;
-        }
-
-        uint32_t rate10 = win ? (uint32_t)sc[ch].hits_10s * 10u / win : 0;
-        ESP_LOGI("stream",
-                 "rf S=%lu ch=%d pk=%u hit=%u/%u h10=%u rate=%lu.%lu/s win=%lus age=%lus",
-                 (unsigned long)nrf_aux_scan_cycles(), ch + 1, sc[ch].peak,
-                 sc[ch].hits, sc[ch].sweeps, sc[ch].hits_10s,
-                 (unsigned long)(rate10 / 10), (unsigned long)(rate10 % 10),
-                 (unsigned long)win, (unsigned long)(sc[ch].peak_age_ms / 1000));
+        char line[160];
+        rf_format_line(line, sizeof(line), sc, ch, nrf_aux_scan_cycles(), win);
+        ESP_LOGI("stream", "%s", line);
         return;
     }
 
@@ -556,9 +647,21 @@ static void handle_line(char *line)
         uint32_t ms = 1000;
         if (*arg) ms = (uint32_t)strtoul(arg, NULL, 10);
         if (ms && ms < 100) ms = 100;
+        if (ms > 60000) ms = 60000;
         stream_set(ms);
-        ESP_LOGI("cli", "stream %s (%lu ms)",
+        config_save_u32("stream_ms", ms);
+        ESP_LOGI("cli", "stream %s (%lu ms, saved)",
                  ms ? "on" : "off", (unsigned long)ms);
+    } else if (!strcmp(line, "fmt")) {
+        ESP_LOGI("cli", "rf_fmt=%s", s_rf_fmt);
+    } else if (!strncmp(line, "fmt ", 4)) {
+        const char *arg = line + 4;
+        if (!strcmp(arg, "reset"))
+            snprintf(s_rf_fmt, sizeof(s_rf_fmt), "%s", RF_FMT_DEFAULT);
+        else
+            snprintf(s_rf_fmt, sizeof(s_rf_fmt), "%s", arg);
+        config_save_str("rf_fmt", s_rf_fmt);
+        ESP_LOGI("cli", "rf_fmt=%s", s_rf_fmt);
     } else if (!strcmp(line, "page")) {
         ESP_LOGI("cli", "page=%s(%d) menu_sel=%d theme=%d wifi=%d",
                  page_name(s_ui.page), (int)s_ui.page, s_ui.menu_sel,
@@ -587,7 +690,7 @@ static void handle_line(char *line)
 static void console_task(void *arg)
 {
     (void)arg;
-    char line[80];
+    char line[128];
     size_t n = 0;
 
     for (;;) {
@@ -611,7 +714,7 @@ static void console_task(void *arg)
 static void usb_console_task(void *arg)
 {
     (void)arg;
-    char line[80];
+    char line[128];
     size_t n = 0;
     for (;;) {
         uint8_t c;
@@ -698,9 +801,10 @@ void app_main(void)
     nrf_aux_scan(true);
     s_ui.page = UI_PAGE_RF_SCAN;
 
-    /* Send the rate line to the consoles once a second by default, so the
-     * PC gets data without sending any command. */
-    stream_set(1000);
+    /* Saved interval and template live in NVS, so changing them does not
+     * need a rebuild.  Default is 1 Hz. */
+    config_load();
+    stream_set(s_stream_ms ? s_stream_ms : 1000);
     st7735_draw_finder(&s_view, &s_clock, &s_ui);
 
     xTaskCreatePinnedToCore(button_task, "buttons", 2048, NULL, 2, NULL, 1);
