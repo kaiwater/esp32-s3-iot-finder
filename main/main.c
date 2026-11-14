@@ -224,9 +224,10 @@ static void handle_event(int b)
             int max = NRF_PRO_CHANNELS - 76;
             if (s_ui.pro_scroll > max) s_ui.pro_scroll = max;
         } else if (b == 3) {
-            s_ui.pro_view = s_ui.pro_view ? 0 : 1;
+            s_ui.pro_view = (s_ui.pro_view + 1) % 3;
             ESP_LOGI("pro", "view %s",
-                     s_ui.pro_view ? "PEAK" : "WATERFALL");
+                     s_ui.pro_view == 0 ? "ACTIVITY" :
+                     (s_ui.pro_view == 1 ? "PEAK" : "WATERFALL"));
             pro_print_list();
         } else if (b == 13) {
             nrf_aux_pro_reset();
@@ -579,12 +580,15 @@ static void pro_print_spectrum(uint32_t cycles)
     static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
     nrf_aux_pro_get(d, NRF_PRO_CHANNELS);
 
-    int view = s_ui.pro_view ? 1 : 0;
+    int view = s_ui.pro_view;
+    if (view < 0 || view > 2) view = 0;
+    const char *tag = view == 1 ? "pk" : (view == 0 ? "act" : "wf");
     char line[160];
     int o = snprintf(line, sizeof(line), "pro S=%lu %s 2400:",
-                     (unsigned long)cycles, view ? "pk" : "wf");
+                     (unsigned long)cycles, tag);
     for (int i = 0; i < NRF_PRO_CHANNELS && o + 1 < (int)sizeof(line); i++) {
-        int lv = (view ? d[i].peak : d[i].last) / 10;
+        int v = view == 1 ? d[i].peak : (view == 0 ? d[i].heat : d[i].last);
+        int lv = v / 10;
         if (lv > 9) lv = 9;
         line[o++] = (char)('0' + lv);
     }
@@ -633,17 +637,22 @@ static void stream_emit(void)
     if (nrf_aux_pro_active()) {
         static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
         nrf_aux_pro_get(d, NRF_PRO_CHANNELS);
-        int view = s_ui.pro_view ? 1 : 0;
+        int view = s_ui.pro_view;
+        if (view < 0 || view > 2) view = 0;
+        const char *tag = view == 1 ? "pk" : (view == 0 ? "act" : "wf");
         int top = 0;
         for (int i = 1; i < NRF_PRO_CHANNELS; i++) {
-            uint8_t a = view ? d[i].peak : d[i].last;
-            uint8_t b = view ? d[top].peak : d[top].last;
+            uint8_t a = view == 1 ? d[i].peak :
+                        (view == 0 ? d[i].heat : d[i].last);
+            uint8_t b = view == 1 ? d[top].peak :
+                        (view == 0 ? d[top].heat : d[top].last);
             if (a > b) top = i;
         }
-        uint8_t val = view ? d[top].peak : d[top].last;
+        uint8_t val = view == 1 ? d[top].peak :
+                      (view == 0 ? d[top].heat : d[top].last);
         ESP_LOGI("stream", "pro S=%lu %s top=%uMHz %s=%u%%",
-                 (unsigned long)nrf_aux_pro_cycles(), view ? "pk" : "wf",
-                 2400 + top, view ? "pk" : "wf", val);
+                 (unsigned long)nrf_aux_pro_cycles(), tag,
+                 2400 + top, tag, val);
         return;
     }
 

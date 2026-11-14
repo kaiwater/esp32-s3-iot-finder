@@ -1076,6 +1076,17 @@ static void wf_push(const nrf_pro_ch_t *d)
     for (int i = 0; i < NRF_PRO_CHANNELS; i++) s_wf[0][i] = d[i].last;
 }
 
+/* Strength ramp for the activity/waterfall views: brighter = stronger.
+ * 90%+ goes white so a strong burst stands out immediately. */
+static uint16_t strength_color(uint8_t v)
+{
+    if (v >= 90) return 0xFFFF;
+    if (v >= 75) return COL_RF_HOT;
+    if (v >= 50) return COL_WARN;
+    if (v >= 25) return COL_RF_PEAK;
+    return COL_DIM;
+}
+
 static void draw_rf_pro_page(const ui_state_t *ui)
 {
     static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
@@ -1084,7 +1095,8 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     int scroll = ui->pro_scroll;
     if (scroll < 0) scroll = 0;
     if (scroll > NRF_PRO_CHANNELS - PRO_VIS) scroll = NRF_PRO_CHANNELS - PRO_VIS;
-    int view = ui->pro_view ? 1 : 0; /* 0 = waterfall, 1 = peak */
+    int view = ui->pro_view; /* 0 = activity, 1 = peak, 2 = waterfall */
+    if (view < 0 || view > 2) view = 0;
 
     uint32_t cyc = nrf_aux_pro_cycles();
     if (cyc != s_wf_cycle) {
@@ -1101,25 +1113,30 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     char buf[48];
     clear_panel();
     text3x5(2, 2, "RF SCAN PRO", 2, COL_ACCENT);
-    text3x5_right(158, 3, view ? "PEAK" : "WF", 1, COL_DIM);
+    text3x5_right(158, 3, view == 2 ? "WF" : (view == 1 ? "PEAK" : "ACT"),
+                  1, COL_DIM);
     snprintf(buf, sizeof(buf), "S=%lu", (unsigned long)cyc);
     text3x5(2, 14, buf, 1, COL_DIM);
 
     const int top = 24, bottom = 100, x0 = 2;
-    if (view) {
-        rect(x0, top, PRO_VIS * 2, bottom - top, COL_RF_BG);
+
+    /* Strongest channel in the window (not used by the waterfall). */
+    int best = -1;
+    uint8_t best_val = 0;
+    if (view != 2) {
         for (int i = 0; i < PRO_VIS; i++) {
             int ch = scroll + i;
             if (ch >= NRF_PRO_CHANNELS) break;
-            uint8_t pk = d[ch].peak;
-            if (!pk) continue;
-            int h = (bottom - top) * pk / 100;
-            if (h < 1) h = 1;
-            rect(x0 + i * 2, bottom - h, 1, h,
-                 pk >= 80 ? COL_RF_HOT : COL_RF_PEAK);
+            uint8_t val = view == 1 ? d[ch].peak : d[ch].heat;
+            if (best < 0 || val > best_val) {
+                best = ch;
+                best_val = val;
+            }
         }
-    } else {
-        /* New sweep on top, older rows sink and darken. */
+    }
+
+    if (view == 2) {
+        /* Waterfall: newest sweep on the top row, older rows sink/fade. */
         for (int row = 0; row < WF_ROWS; row++) {
             int y = top + row;
             int num = WF_ROWS - row + 10;
@@ -1127,10 +1144,41 @@ static void draw_rf_pro_page(const ui_state_t *ui)
             for (int i = 0; i < PRO_VIS; i++) {
                 uint8_t v = s_wf[row][scroll + i];
                 if (!v) continue;
-                uint16_t base = v >= 80 ? COL_RF_HOT :
-                                (v >= 50 ? COL_WARN : COL_RF_PEAK);
-                rect(x0 + i * 2, y, 1, 1, scale565(base, num, den));
+                rect(x0 + i * 2, y, 1, 1,
+                     scale565(strength_color(v), num, den));
             }
+        }
+    } else {
+        rect(x0, top, PRO_VIS * 2, bottom - top, COL_RF_BG);
+
+        /* Frequency label first: the bars paint over it when they grow, so
+         * a fresh sweep visually wipes the old callout. */
+        if (best >= 0 && best_val) {
+            int bh = (bottom - top) * best_val / 100;
+            if (bh < 1) bh = 1;
+            int bx = x0 + (best - scroll) * 2;
+            int ty = bottom - bh - 2;
+            if (ty < top) ty = top;
+            if (ty > bottom - 5) ty = bottom - 5;
+            snprintf(buf, sizeof(buf), "%uMHz", 2400 + best);
+            int tw = (int)strlen(buf) * 4;
+            int tx = bx + 3;
+            if (tx + tw > WIDTH - 1) tx = bx - tw - 2;
+            if (tx < 1) tx = 1;
+            text3x5(tx, ty, buf, 1, COL_TEXT);
+        }
+
+        for (int i = 0; i < PRO_VIS; i++) {
+            int ch = scroll + i;
+            if (ch >= NRF_PRO_CHANNELS) break;
+            uint8_t val = view == 1 ? d[ch].peak : d[ch].heat;
+            if (!val) continue;
+            int h = (bottom - top) * val / 100;
+            if (h < 1) h = 1;
+            uint16_t col = view == 1 ?
+                           (val >= 80 ? COL_RF_HOT : COL_RF_PEAK) :
+                           strength_color(val);
+            rect(x0 + i * 2, bottom - h, 1, h, col);
         }
     }
 
@@ -1147,33 +1195,19 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     rect(2, 111, WIDTH - 4, 1, COL_RF_BG);
     rect(bar_x, 110, 8, 3, COL_ACCENT);
 
-    int best = -1;
-    for (int i = 0; i < PRO_VIS; i++) {
-        int ch = scroll + i;
-        if (ch >= NRF_PRO_CHANNELS) break;
-        uint8_t val = view ? d[ch].peak : d[ch].last;
-        uint8_t bv = best < 0 ? 0 : (view ? d[best].peak : d[best].last);
-        if (best < 0 || val > bv) best = ch;
-    }
-    uint8_t best_val = best < 0 ? 0 : (view ? d[best].peak : d[best].last);
     if (best >= 0 && best_val) {
-        snprintf(buf, sizeof(buf), "%s %u%% @ %uMHz", view ? "PK" : "ACT",
-                 best_val, 2400 + best);
+        snprintf(buf, sizeof(buf), "%s %u%% @ %uMHz",
+                 view == 1 ? "PK" : "ACT", best_val, 2400 + best);
         text3x5(2, 114, buf, 1, COL_WARN);
-
-        if (view) {
-            /* Frequency callout next to the strongest bar. */
-            int bh = (bottom - top) * d[best].peak / 100;
-            if (bh < 1) bh = 1;
-            int bx = x0 + (best - scroll) * 2;
-            int ty = bottom - bh - 6;
-            if (ty < top) ty = top;
-            snprintf(buf, sizeof(buf), "%uMHz", 2400 + best);
-            int tw = (int)strlen(buf) * 4;
-            int tx = bx - tw / 2;
-            if (tx < 2) tx = 2;
-            if (tx > WIDTH - tw - 2) tx = WIDTH - tw - 2;
-            text3x5(tx, ty, buf, 1, COL_TEXT);
+    } else if (view == 2) {
+        int topv = 0;
+        for (int i = 0; i < NRF_PRO_CHANNELS; i++)
+            if (d[i].last > topv) topv = d[i].last;
+        if (topv) {
+            snprintf(buf, sizeof(buf), "NEW %u%%", topv);
+            text3x5(2, 114, buf, 1, COL_WARN);
+        } else {
+            text3x5(2, 114, "NO ENERGY YET", 1, COL_DIM);
         }
     } else {
         text3x5(2, 114, "NO ENERGY YET", 1, COL_DIM);
