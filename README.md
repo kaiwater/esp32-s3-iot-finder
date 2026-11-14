@@ -170,7 +170,38 @@ help                    帮助
 - 按钮控制：`btn 3` = 短按 K3（OK），`btn 4 long` = 长按 K4（返回/切主题）
 - `page` 可以确认当前页面，方便远程按按钮
 
-Linux 例子：
+**Windows（插原生 USB 口的这台）：**
+
+- 设备管理器 → **端口 (COM 和 LPT)** 里找新出现的 `USB 串行设备 (COMx)`；
+  多数 Win10/11 自带 `usbser.sys`，不用装驱动
+- 端口号不确定时：
+
+```powershell
+[System.IO.Ports.SerialPort]::GetPortNames()
+```
+
+- 图形串口工具（PuTTY / Tera Term）：选 `COMx`，**115200 8-N-1，无流控**，
+  原生 USB 是 CDC，波特率不影响，但填 115200 最省事
+- 仓库自带脚本 `tools/finder-cli.ps1`：
+
+```powershell
+.\tools\finder-cli.ps1 -Port COM7
+.\tools\finder-cli.ps1 -Port COM7 -Command status -Seconds 2
+.\tools\finder-cli.ps1 -Port COM7 -Command "btn 3"
+.\tools\finder-cli.ps1 -Port COM7 -Command "btn 4 long"
+```
+
+不加 `-Command` 时是交互模式：一直显示日志，输入命令回车发送，Ctrl+C 退出。
+
+- PowerShell 直接发一条命令（不装任何东西）：
+
+```powershell
+$p = New-Object System.IO.Ports.SerialPort COM7,115200,None,8,One
+$p.Open(); $p.WriteLine("page"); Start-Sleep -Milliseconds 400
+$p.ReadExisting(); $p.Close()
+```
+
+**Linux / macOS 例子：**
 
 ```sh
 stty -F /dev/ttyACM0 raw -echo
@@ -179,11 +210,11 @@ cat /dev/ttyACM0                      # 读日志和回复
 printf 'btn 3\r\n' > /dev/ttyACM0     # 短按 OK
 ```
 
-Python 例子：
+Python 例子（两边系统都能用）：
 
 ```python
 import serial, time
-s = serial.Serial('/dev/ttyACM0', 115200, timeout=0.5)
+s = serial.Serial('COM7', 115200, timeout=0.5)   # Linux/macOS 用 /dev/ttyACM0
 s.write(b'status\r\n')
 time.sleep(0.3)
 print(s.read(4096).decode('ascii', 'ignore'))
