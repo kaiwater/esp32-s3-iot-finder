@@ -520,11 +520,16 @@ void app_main(void)
     wnm_clock_init();
     wnm_clock_poll(&s_clock);
     memset(&s_ui, 0, sizeof(s_ui));
-    s_ui.page = UI_PAGE_FIND;
     s_ui.ssid_enc = SSID_ENC_UNKNOWN;
+
+    /* Boot straight into RF SCAN with Wi-Fi paused, so the NRF sees the
+     * environment without the ESP32 radio desensing it. */
+    nrf_aux_start();
+    finder_wifi_pause();
+    nrf_aux_scan(true);
+    s_ui.page = UI_PAGE_RF_SCAN;
     st7735_draw_finder(&s_view, &s_clock, &s_ui);
 
-    nrf_aux_start();
     xTaskCreatePinnedToCore(button_task, "buttons", 2048, NULL, 2, NULL, 1);
     console_start();
 
