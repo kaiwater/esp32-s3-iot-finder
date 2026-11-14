@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -294,6 +295,8 @@ static void print_help(void)
     ESP_LOGI("cli", "  ui ap|detail|stas|rf|help|color|find  jump to a UI page (debug)");
     ESP_LOGI("cli", "  rfdata                dump NRF scan peak/avg/age/hits");
     ESP_LOGI("cli", "  wifioff / wifion      pause/resume ESP32 Wi-Fi (RF scan test)");
+    ESP_LOGI("cli", "  btn 1..4 [long]       emulate a short/long K1..K4 press");
+    ESP_LOGI("cli", "  page                  print the current UI page");
     ESP_LOGI("cli", "  theme                 cycle the 10 UI palettes");
     ESP_LOGI("cli", "  status                print current state");
     ESP_LOGI("cli", "  reboot                restart");
@@ -351,6 +354,23 @@ static void print_status(void)
              s_view.have_ap_load ? (unsigned)((s_view.ap_load * 100u + 127u) / 255u) : 0,
              s_view.ap_sta_count);
     print_clock();
+}
+
+static const char *page_name(int page)
+{
+    switch (page) {
+    case UI_PAGE_FIND: return "find";
+    case UI_PAGE_MENU: return "menu";
+    case UI_PAGE_INFO: return "info";
+    case UI_PAGE_SSID: return "ssid";
+    case UI_PAGE_AP_LIST: return "ap-list";
+    case UI_PAGE_AP_DETAIL: return "ap-detail";
+    case UI_PAGE_AP_STAS: return "ap-stas";
+    case UI_PAGE_RF_SCAN: return "rf-scan";
+    case UI_PAGE_RF_HELP: return "rf-help";
+    case UI_PAGE_COLOR_TEST: return "color";
+    default: return "--";
+    }
 }
 
 static void handle_line(char *line)
@@ -443,6 +463,22 @@ static void handle_line(char *line)
         } else if (!strcmp(arg, "find")) {
             s_ui.page = UI_PAGE_FIND;
         }
+    } else if (!strncmp(line, "btn ", 4)) {
+        int n = 0;
+        char mode[8] = {0};
+        int got = sscanf(line + 4, "%d %7s", &n, mode);
+        if (got >= 1 && n >= 1 && n <= 4) {
+            bool lng = got >= 2 &&
+                       (mode[0] == 'l' || mode[0] == 'L' || mode[0] == 'h');
+            s_button_event = lng ? 10 + n : n;
+            ESP_LOGI("cli", "button %d %s", n, lng ? "long" : "short");
+        } else {
+            ESP_LOGW("cli", "usage: btn 1..4 [long]");
+        }
+    } else if (!strcmp(line, "page")) {
+        ESP_LOGI("cli", "page=%s(%d) menu_sel=%d theme=%d wifi=%d",
+                 page_name(s_ui.page), (int)s_ui.page, s_ui.menu_sel,
+                 st7735_theme(), s_view.wifi_ok);
     } else if (!strcmp(line, "wifioff")) {
         finder_wifi_pause();
     } else if (!strcmp(line, "wifion")) {
@@ -486,6 +522,45 @@ static void console_task(void *arg)
             line[n++] = (char)c;
         }
     }
+}
+
+static void usb_console_task(void *arg)
+{
+    (void)arg;
+    char line[80];
+    size_t n = 0;
+    for (;;) {
+        uint8_t c;
+        if (usb_serial_jtag_read_bytes(&c, 1, pdMS_TO_TICKS(200)) != 1) continue;
+        if (c == '\r' || c == '\n') {
+            if (n) {
+                line[n] = 0;
+                handle_line(line);
+                n = 0;
+            }
+        } else if (c == 0x08 || c == 0x7F) {
+            if (n) n--;
+        } else if (n + 1 < sizeof(line)) {
+            line[n++] = (char)c;
+        }
+    }
+}
+
+static void usb_console_start(void)
+{
+    usb_serial_jtag_driver_config_t cfg = {
+        .tx_buffer_size = 512,
+        .rx_buffer_size = 512,
+    };
+    esp_err_t err = usb_serial_jtag_driver_install(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW("cli", "USB serial console unavailable: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+    xTaskCreatePinnedToCore(usb_console_task, "usbcon", 4096, NULL, 2, NULL, 1);
+    ESP_LOGI("cli", "USB serial console ready (native USB port)");
+    ESP_LOGI("cli", "USB: send 'help', 'status', 'rfdata', 'btn 1..4 [long]'");
 }
 
 static void console_start(void)
@@ -532,6 +607,7 @@ void app_main(void)
 
     xTaskCreatePinnedToCore(button_task, "buttons", 2048, NULL, 2, NULL, 1);
     console_start();
+    usb_console_start();
 
     uint32_t last_draw = 0;
     uint32_t last_nrf = 0;

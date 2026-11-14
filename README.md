@@ -155,8 +155,48 @@ ui ap|detail|stas|rf|help|color|find  调试：跳 AP LIST / AP DETAIL / STA LIS
 theme                   调试：循环 10 套配色
 status                  打印当前状态
 reboot                  重启
+btn 1..4 [long]         模拟 K1..K4 短按/长按
+page                    打印当前 UI 页、菜单项、主题、Wi-Fi 状态
 help                    帮助
 ```
+
+### 第二个 USB 口：原生 USB 双控制台
+
+板子上的**原生 USB 口**（ESP32-S3 的 GPIO19/20，不是 UART 桥）现在也是一个控制台：
+
+- 插到另一台 PC，系统会出现 `ttyACM*` / `COMx`（CDC，不需要关心波特率）
+- 输出：所有日志和命令回复都会**同时**镜像到 UART 和原生 USB
+- 输入：PC 发同样的命令行，例如 `status`、`rfdata`、`ui rf`、`theme`
+- 按钮控制：`btn 3` = 短按 K3（OK），`btn 4 long` = 长按 K4（返回/切主题）
+- `page` 可以确认当前页面，方便远程按按钮
+
+Linux 例子：
+
+```sh
+stty -F /dev/ttyACM0 raw -echo
+printf 'page\r\n' > /dev/ttyACM0      # 发送命令
+cat /dev/ttyACM0                      # 读日志和回复
+printf 'btn 3\r\n' > /dev/ttyACM0     # 短按 OK
+```
+
+Python 例子：
+
+```python
+import serial, time
+s = serial.Serial('/dev/ttyACM0', 115200, timeout=0.5)
+s.write(b'status\r\n')
+time.sleep(0.3)
+print(s.read(4096).decode('ascii', 'ignore'))
+s.write(b'btn 4 long\r\n')            # 长按返回/切主题
+```
+
+注意：
+
+- **两个 USB 口同时接两台 PC 会引入地环路**，NRF 的 RPD 可能再次被压成 0；
+  测量时建议只给板子一路供电，或给第二台 PC 的 USB 加隔离器（ADuM3160/4160 一类）
+- 只有**原生 USB**（GPIO19/20）可用；如果板子的第二个口其实是另一颗 UART 桥，就没有这路控制台
+- 刷机仍可走 UART 口；原生 USB 也支持 USB-JTAG 烧录
+- RF SCAN 期间 Wi-Fi 是暂停的，`status` 会显示 `wifi=0`，这是正常现象
 
 ---
 
