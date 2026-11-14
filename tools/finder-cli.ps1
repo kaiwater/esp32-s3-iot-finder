@@ -196,13 +196,17 @@ try {
         }
         Write-Host ""
     } else {
-        Write-Host "Connected. Type a command and press Enter. Ctrl+C quits."
-        Write-Host "A silent console is normal when nothing is logging; try 'page' or 'stream 1000'."
+        Write-Host "Connected. a/d/s/w act as K1..K4 immediately (Esc = command mode)."
+        Write-Host "Ctrl+C quits. A silent console is normal; 'stream 1000' shows RF lines."
 
         $keyboard = $true
         try { [void][Console]::KeyAvailable } catch { $keyboard = $false }
 
+        # The firmware starts in line mode; switch the USB console to raw
+        # key mode so a/s/d/w need no Enter.  Esc goes back to line mode.
+        $keypad = $true
         function Send-Setup {
+            try { $sp.WriteLine("keypad on") } catch { }
             if ($Stream -gt 0) {
                 try { $sp.WriteLine("stream $Stream") } catch { }
             }
@@ -213,7 +217,6 @@ try {
         Send-Setup
 
         $typed = ""
-        $keypad = $false
         while ($true) {
             try {
                 while ($sp.BytesToRead -gt 0) {
@@ -260,7 +263,7 @@ try {
                 if (-not $sp) { break }
                 Send-Setup
                 $typed = ""
-                $keypad = $false
+                $keypad = $true
             }
         }
     }
