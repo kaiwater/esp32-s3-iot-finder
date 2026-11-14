@@ -156,6 +156,8 @@ theme                   调试：循环 10 套配色
 status                  打印当前状态
 reboot                  重启
 btn 1..4 [long]         模拟 K1..K4 短按/长按
+a/d/s/w                 直接当 K1/K2/K3/K4 短按（大写 = 长按）
+keypad [on|off]         USB 口单键模式：a/d/s/w 不用回车，Esc 退出
 page                    打印当前 UI 页、菜单项、主题、Wi-Fi 状态
 stream [ms]             周期性输出 RF/状态行（0=关闭，默认 1000ms）
 help                    帮助
@@ -252,6 +254,31 @@ status        # 额外一行 usb host=1 drv=1 rx=1234 lines=17
 - `drv=1`：固件里的 USB 驱动装好了
 - `rx/lines`：从 USB 收到的字节/命令行数；按键没反应时先看这两个数是否在涨
 - 每收到一行 USB 命令，日志里还会出现 `usb> status`，确认命令确实进来了
+
+### 用 a/s/d/w 当四个按键（PC）
+
+两种用法：
+
+```text
+a        K1 上
+d        K2 下
+s        K3 确认
+w        K4 返回
+```
+
+- 小写 = 短按，大写 `A/D/S/W` = 长按（长按 K4 = 切主题，长按 K3 = 清 RF 峰值）
+- 兼容原有布局：a 在左、d 在中、s 在右，w 单独在上方（按你的习惯排的）
+
+如果不想每次按回车，在 COM4 上开单键模式：
+
+```text
+keypad on
+```
+
+之后 PC 终端里直接按 `a`/`d`/`s`/`w` 就立即生效，不用回车；大写仍是长按。
+按 `Esc` 退出单键模式，回到正常的命令行。
+
+`finder-cli.ps1` 也支持：输入 `keypad on` 后，脚本会把单个按键立即发给板子，`Esc` 退出。
 
 - PowerShell 直接发一条命令（不装任何东西）：
 

@@ -26,6 +26,7 @@ static ui_state_t s_ui;
 static uint32_t s_btn_ready_ms;
 static volatile uint32_t s_usb_rx_bytes;
 static volatile uint32_t s_usb_rx_lines;
+static bool s_keypad;
 
 static void button_task(void *arg)
 {
@@ -304,6 +305,8 @@ static void print_help(void)
     ESP_LOGI("cli", "  btn 1..4 [long]       emulate a short/long K1..K4 press");
     ESP_LOGI("cli", "  page                  print the current UI page");
     ESP_LOGI("cli", "  stream [ms]           periodic RF/status line (0=off, default 1000)");
+    ESP_LOGI("cli", "  a/d/s/w or A/D/S/W    press K1..K4 (upper case = long)");
+    ESP_LOGI("cli", "  keypad [on|off]       raw keys on USB without Enter (Esc exits)");
     ESP_LOGI("cli", "  fmt [template|reset]  show/set the saved RF line template");
     ESP_LOGI("cli", "      %%S cycles  %%c ch  %%p peak  %%h hits  %%t sweeps");
     ESP_LOGI("cli", "      %%0 hits/10s  %%r rate  %%w window  %%a age");
@@ -652,6 +655,20 @@ static void handle_line(char *line)
         config_save_u32("stream_ms", ms);
         ESP_LOGI("cli", "stream %s (%lu ms, saved)",
                  ms ? "on" : "off", (unsigned long)ms);
+    } else if (!strcmp(line, "keypad") || !strcmp(line, "keypad on") ||
+               !strcmp(line, "keypad off")) {
+        if (!strcmp(line, "keypad on")) s_keypad = true;
+        else if (!strcmp(line, "keypad off")) s_keypad = false;
+        ESP_LOGI("cli", "keypad %s (a/d/s/w = K1..K4, Esc exits)",
+                 s_keypad ? "on" : "off");
+    } else if (strlen(line) == 1 &&
+               strchr("adswADSW", line[0]) != NULL) {
+        char k = (char)tolower((unsigned char)line[0]);
+        int btn = k == 'a' ? 1 : k == 'd' ? 2 : k == 's' ? 3 : 4;
+        bool lng = isupper((unsigned char)line[0]) != 0;
+        s_button_event = lng ? 10 + btn : btn;
+        ESP_LOGI("cli", "key '%c' -> K%d %s", line[0], btn,
+                 lng ? "long" : "short");
     } else if (!strcmp(line, "fmt")) {
         ESP_LOGI("cli", "rf_fmt=%s", s_rf_fmt);
     } else if (!strncmp(line, "fmt ", 4)) {
@@ -720,6 +737,28 @@ static void usb_console_task(void *arg)
         uint8_t c;
         if (usb_serial_jtag_read_bytes(&c, 1, pdMS_TO_TICKS(200)) != 1) continue;
         s_usb_rx_bytes++;
+
+        if (s_keypad) {
+            if (c == 0x1B) { /* Esc leaves key mode */
+                s_keypad = false;
+                n = 0;
+                ESP_LOGI("cli", "keypad off");
+                continue;
+            }
+            if (c == '\r' || c == '\n') continue;
+            char k = (char)c;
+            char lk = (char)tolower((unsigned char)k);
+            int btn = lk == 'a' ? 1 : lk == 'd' ? 2 : lk == 's' ? 3 :
+                      lk == 'w' ? 4 : 0;
+            if (btn) {
+                bool lng = isupper((unsigned char)k) != 0;
+                s_button_event = lng ? 10 + btn : btn;
+                ESP_LOGI("cli", "keypad '%c' -> K%d %s", k, btn,
+                         lng ? "long" : "short");
+            }
+            continue;
+        }
+
         if (c == '\r' || c == '\n') {
             if (n) {
                 line[n] = 0;

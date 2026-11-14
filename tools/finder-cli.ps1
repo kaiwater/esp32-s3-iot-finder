@@ -213,6 +213,7 @@ try {
         Send-Setup
 
         $typed = ""
+        $keypad = $false
         while ($true) {
             try {
                 while ($sp.BytesToRead -gt 0) {
@@ -220,9 +221,22 @@ try {
                 }
                 if ($keyboard -and [Console]::KeyAvailable) {
                     $key = [Console]::ReadKey($true)
-                    if ($key.Key -eq "Enter") {
+                    if ($keypad) {
+                        if ($key.Key -eq "Escape") {
+                            $sp.WriteLine("keypad off")
+                            $keypad = $false
+                            Write-Host ""
+                        } elseif ("adswADSW".Contains([string]$key.KeyChar)) {
+                            $sp.Write([string]$key.KeyChar)
+                        }
+                    } elseif ($key.Key -eq "Enter") {
                         Write-Host ""
-                        if ($typed.Length -gt 0) { $sp.WriteLine($typed) }
+                        if ($typed.Length -gt 0) {
+                            $sp.WriteLine($typed)
+                            $cmd = $typed.Trim().ToLower()
+                            if ($cmd -eq "keypad on") { $keypad = $true }
+                            elseif ($cmd -eq "keypad off") { $keypad = $false }
+                        }
                         $typed = ""
                     } elseif ($key.Key -eq "Backspace") {
                         if ($typed.Length -gt 0) {
@@ -246,6 +260,7 @@ try {
                 if (-not $sp) { break }
                 Send-Setup
                 $typed = ""
+                $keypad = $false
             }
         }
     }
