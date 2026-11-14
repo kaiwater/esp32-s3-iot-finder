@@ -161,7 +161,7 @@ stream [ms]             周期性输出 RF/状态行（0=关闭，默认 1000ms�
 help                    帮助
 ```
 
-`stream` 默认关闭，开启后每秒（可改）输出一行，和屏幕无关：
+`stream` **默认开启（1000ms）**，每秒输出一行，和屏幕无关；`stream 0` 关闭：
 
 ```text
 rf S=1155 ch=2 pk=100 hit=351/1155 h10=19 rate=1.9/s win=10s age=7s
@@ -206,9 +206,9 @@ rf S=1155 ch=2 pk=100 hit=351/1155 h10=19 rate=1.9/s win=10s age=7s
 ```
 
 - 自动选口按 **VID_303A**（ESP32-S3 原生 USB）识别，不再看名字；CH340/CP210/FTDI 这类 UART 桥会被降权
-- 连上后会先发一条 `page` 并等回复：能回说明**输入和输出都通**；没回复会直接提示
-  `no reply to 'page': USB input may not reach the firmware`
-- 控制台安静是正常的：没有新日志时不会刷屏，用 `-Stream 1000` 或输入 `stream 1000` 才会有持续数据
+- 固件**默认每秒输出一行 `stream: rf ... rate=...`**，所以连上就能看到数据，不需要发命令
+- `-Stream <ms>` 可以覆盖默认间隔，例如 `-Stream 500`
+- 想停掉持续输出，在 UART 或可用的 USB 控制台发 `stream 0`
 - **烧录/重启后口消失会自动等待重连**（默认最多等 30 秒，`-ReconnectSeconds 0` 表示一直等）
 - 重连后如果 COM 号变了，会重新扫描，不需要改参数
 - 一条命令模式在断线重连后会自动重发当前命令（最多 3 次）

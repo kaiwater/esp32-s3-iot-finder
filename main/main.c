@@ -5,6 +5,7 @@
 
 #include "driver/uart.h"
 #include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -641,6 +642,10 @@ static void usb_console_start(void)
     esp_err_t err = ESP_OK;
     if (!usb_serial_jtag_is_driver_installed()) {
         err = usb_serial_jtag_driver_install(&cfg);
+        /* Move the console VFS to the driver as well.  Mixing the ROM
+         * (no-driver) TX path with the driver RX path is what ESP-IDF's
+         * own console does not do. */
+        if (err == ESP_OK) usb_serial_jtag_vfs_use_driver();
     }
     if (err != ESP_OK) {
         ESP_LOGW("cli", "USB serial console unavailable: %s",
@@ -692,6 +697,10 @@ void app_main(void)
     finder_wifi_pause();
     nrf_aux_scan(true);
     s_ui.page = UI_PAGE_RF_SCAN;
+
+    /* Send the rate line to the consoles once a second by default, so the
+     * PC gets data without sending any command. */
+    stream_set(1000);
     st7735_draw_finder(&s_view, &s_clock, &s_ui);
 
     xTaskCreatePinnedToCore(button_task, "buttons", 2048, NULL, 2, NULL, 1);

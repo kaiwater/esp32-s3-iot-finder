@@ -208,26 +208,9 @@ try {
             }
         }
 
-        # Prove both directions right away instead of waiting for a log.
-        $probeText = ""
-        try { $sp.WriteLine("page") } catch { }
-        $probeEnd = (Get-Date).AddMilliseconds(900)
-        while ((Get-Date) -lt $probeEnd) {
-            if ($sp.BytesToRead -gt 0) {
-                $chunk = $sp.ReadExisting()
-                Write-Host -NoNewline $chunk
-                $probeText += $chunk
-            } else {
-                Start-Sleep -Milliseconds 30
-            }
-        }
-        if ($probeText -notmatch "page=") {
-            Write-Host ""
-            Write-Host "[finder] no reply to 'page': USB input may not reach the firmware."
-            Write-Host "[finder] check 'status' on the UART: usb host/drv/rx counters."
-        } else {
-            Send-Setup
-        }
+        # Telemetry is on by default in the firmware; -Stream can override
+        # the interval, and the user can still type commands if input works.
+        Send-Setup
 
         $typed = ""
         while ($true) {
