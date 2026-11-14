@@ -35,3 +35,41 @@ bool nrf_aux_scan_active(void);
 void nrf_aux_scan_get(nrf_scan_ch_t *out, int max);
 uint32_t nrf_aux_scan_cycles(void);
 uint32_t nrf_aux_scan_elapsed_ms(void);
+
+/* Fixed 2450 MHz observation mode (NRF RF_CH=50).  Samples back-to-back
+ * 8 ms RPD windows instead of hopping the 13 Wi-Fi channels. */
+typedef struct {
+    uint8_t peak;      /* max RPD duty since reset, 0..100 */
+    uint8_t avg;       /* smoothed RPD duty */
+    uint8_t last;
+    uint32_t hits;     /* windows with >=25% duty */
+    uint16_t hits_10s; /* hits in the last 10 seconds */
+    uint32_t sweeps;   /* total 8 ms windows */
+    uint32_t peak_age_ms;
+    uint32_t last_age_ms;
+} nrf_mw_t;
+
+void nrf_aux_mw(bool on);
+bool nrf_aux_mw_active(void);
+void nrf_aux_mw_reset(void);
+void nrf_aux_mw_get(nrf_mw_t *out);
+uint32_t nrf_aux_mw_elapsed_ms(void);
+
+/* RF SCAN PRO: step all 126 NRF channels (2400..2525 MHz, 1 MHz grid) and
+ * keep a peak/hit map for each one. */
+#define NRF_PRO_CHANNELS 126
+
+typedef struct {
+    uint8_t peak;    /* max RPD duty, 0..100 */
+    uint8_t last;    /* latest RPD duty */
+    uint8_t avg;     /* smoothed RPD duty */
+    uint16_t hits;   /* visits with >=25% duty */
+    uint16_t sweeps; /* visits */
+} nrf_pro_ch_t;
+
+void nrf_aux_pro(bool on);
+bool nrf_aux_pro_active(void);
+void nrf_aux_pro_reset(void);
+void nrf_aux_pro_get(nrf_pro_ch_t *out, int max);
+uint32_t nrf_aux_pro_cycles(void);
+uint32_t nrf_aux_pro_elapsed_ms(void);

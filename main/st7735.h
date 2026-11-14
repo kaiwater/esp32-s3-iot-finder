@@ -22,6 +22,8 @@ typedef enum {
     UI_PAGE_AP_STAS,
     UI_PAGE_RF_SCAN,
     UI_PAGE_RF_HELP,
+    UI_PAGE_MW,
+    UI_PAGE_RF_PRO,
     UI_PAGE_COLOR_TEST,
 } ui_page_t;
 
@@ -32,6 +34,8 @@ enum {
     UI_MENU_CHAN,
     UI_MENU_SSID,
     UI_MENU_RFSCAN,
+    UI_MENU_MW,
+    UI_MENU_RFPRO,
     UI_MENU_INFO,
     UI_MENU_REBOOT,
     UI_MENU_COUNT,
@@ -39,7 +43,9 @@ enum {
 
 typedef struct {
     ui_page_t page;
+    ui_page_t help_back;
     int menu_sel;
+    int pro_scroll;
     ssid_enc_t ssid_enc;
 
     int ap_sel;

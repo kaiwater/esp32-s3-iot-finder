@@ -96,7 +96,7 @@ idf.py -p /dev/cu.usbserial-XXXX flash
 - **候选**：短按 `>` / `<`，在最近 60 秒出现过的 STA 里前后切换
 
 `*` 打开菜单，`>` / `<` 移动，`#` 确认，`*` 返回。菜单项：
-`LEARN TARGET`、`CLEAR TARGET`、`PEAK CLEAR`、`CHAN`、`AP LIST`、`RF SCAN`、`INFO`、`REBOOT`。
+`LEARN TARGET`、`CLEAR TARGET`、`PEAK CLEAR`、`CHAN`、`AP LIST`、`RF SCAN`、`MW 2450`、`RF SCAN PRO`、`INFO`、`REBOOT`。
 
 学习模式会在屏幕上显示倒计时和当前最佳候选。
 候选目标切换后会重新开始统计。
@@ -160,6 +160,10 @@ a/d/s/w                 直接当 K1/K2/K3/K4 短按（大写 = 长按）
 keypad [on|off]         USB 口单键模式：a/d/s/w 不用回车，Esc 退出
 page                    打印当前 UI 页、菜单项、主题、Wi-Fi 状态
 stream [ms]             周期性输出 RF/状态行（0=关闭，默认 1000ms）
+pro                     RF Scan Pro：2400-2525MHz、1MHz 步进频谱
+pro off | reset | list  停止 / 清零 / 打印高能频段列表
+mw                      固定 2450MHz 观察模式
+mw off | reset          回到 13 信道 / 清零 MW 统计
 help                    帮助
 ```
 
@@ -315,6 +319,49 @@ s.write(b'btn 4 long\r\n')            # 长按返回/切主题
 - 只有**原生 USB**（GPIO19/20）可用；如果板子的第二个口其实是另一颗 UART 桥，就没有这路控制台
 - 刷机仍可走 UART 口；原生 USB 也支持 USB-JTAG 烧录
 - RF SCAN 期间 Wi-Fi 是暂停的，`status` 会显示 `wifi=0`，这是正常现象
+
+### RF SCAN PRO（2400–2525MHz）
+
+类似收音机自动搜台：NRF 从 **2400 到 2525MHz 逐 1MHz** 扫一遍，每个点采 8ms RPD，
+一轮约 **1.7 秒**，循环刷新。
+
+- 屏幕每屏显示 **76 个信道**（2px/信道），K1/K2（`a`/`d`）左右滚动，底部有滚动条
+- 屏幕显示窗口内最强信道：`PK 100% @ 2450MHz`
+- 短按 `#`：立即在 PC 上打印高能频段列表
+- 长按 `#`：清零峰值重新累计
+- 短按 `*`：退出并恢复 Wi-Fi
+
+PC（UART/COM4）输出：
+
+```text
+pro S=3 2400:0001000300000111000000001120000000069300...
+```
+
+- `S=` 是第几轮
+- 后面 **126 个字符**依次对应 2400..2525MHz
+- 字符 `0-9` = 该 MHz 的峰值百分比 / 10（`9` = 90% 以上）
+
+每 5 轮和停止时打印高能分布：
+
+```text
+pro top 2427MHz pk=100%
+pro hot 2425-2427MHz pk=100% hit=6/15
+pro hot 2433-2434MHz pk=100% hit=4/10
+pro hot: none (peak < 50%)
+```
+
+- `hot` 阈值是峰值 ≥ 50%
+- `hit=x/y` 表示该段内信道出现 ≥25% 能量的次数 / 访问次数
+
+串口命令：
+
+```text
+pro              启动
+pro off          停止（会打印最终高能列表，回到 13 信道 RF SCAN）
+pro reset        清零
+pro list         立即打印当前高能列表
+ui pro           直接跳到该页面
+```
 
 ---
 

@@ -20,10 +20,29 @@
 
 static const char *TAG = "iot-finder";
 static volatile int s_button_event;
+static portMUX_TYPE s_btn_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void set_button_event(int b)
+{
+    portENTER_CRITICAL(&s_btn_mux);
+    s_button_event = b;
+    portEXIT_CRITICAL(&s_btn_mux);
+}
+
+static int take_button_event(void)
+{
+    portENTER_CRITICAL(&s_btn_mux);
+    int b = s_button_event;
+    s_button_event = 0;
+    portEXIT_CRITICAL(&s_btn_mux);
+    return b;
+}
 static finder_view_t s_view;
 static wnm_clock_view_t s_clock;
 static ui_state_t s_ui;
 static uint32_t s_btn_ready_ms;
+static uint32_t s_pro_printed;
+static void pro_print_list(void);
 static volatile uint32_t s_usb_rx_bytes;
 static volatile uint32_t s_usb_rx_lines;
 static bool s_keypad;
@@ -33,7 +52,7 @@ static void button_task(void *arg)
     (void)arg;
     for (;;) {
         int b = st7735_button();
-        if (b) s_button_event = b;
+        if (b) set_button_event(b);
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
@@ -134,9 +153,28 @@ static void menu_execute(void)
         ap_list_open();
         break;
     case UI_MENU_RFSCAN:
+        nrf_aux_mw(false);
+        nrf_aux_pro(false);
         finder_wifi_pause();
         nrf_aux_scan(true);
         s_ui.page = UI_PAGE_RF_SCAN;
+        break;
+    case UI_MENU_MW:
+        nrf_aux_scan(false);
+        nrf_aux_pro(false);
+        finder_wifi_pause();
+        nrf_aux_mw(true);
+        s_ui.page = UI_PAGE_MW;
+        break;
+    case UI_MENU_RFPRO:
+        nrf_aux_scan(false);
+        nrf_aux_mw(false);
+        finder_wifi_pause();
+        nrf_aux_pro(true);
+        s_pro_printed = 0;
+        s_ui.pro_scroll = 0;
+        s_ui.page = UI_PAGE_RF_PRO;
+        ESP_LOGI("pro", "start: 2400..2525MHz step 1MHz, S=sweep");
         break;
     case UI_MENU_INFO:
         s_ui.page = UI_PAGE_INFO;
@@ -164,6 +202,7 @@ static void handle_event(int b)
 
     if (s_ui.page == UI_PAGE_RF_SCAN) {
         if (b == 3) {
+            s_ui.help_back = UI_PAGE_RF_SCAN;
             s_ui.page = UI_PAGE_RF_HELP;
         } else if (b == 13) {
             nrf_aux_scan(true); /* long #: restart / clear peaks */
@@ -175,9 +214,45 @@ static void handle_event(int b)
         return;
     }
 
+    if (s_ui.page == UI_PAGE_RF_PRO) {
+        if (b == 1) {
+            s_ui.pro_scroll -= 38;
+            if (s_ui.pro_scroll < 0) s_ui.pro_scroll = 0;
+        } else if (b == 2) {
+            s_ui.pro_scroll += 38;
+            int max = NRF_PRO_CHANNELS - 76;
+            if (s_ui.pro_scroll > max) s_ui.pro_scroll = max;
+        } else if (b == 3) {
+            pro_print_list();
+        } else if (b == 13) {
+            nrf_aux_pro_reset();
+            s_pro_printed = 0;
+        } else if (b == 4 || b == 14) {
+            nrf_aux_pro(false);
+            pro_print_list();
+            finder_wifi_resume();
+            s_ui.page = UI_PAGE_MENU;
+        }
+        return;
+    }
+
+    if (s_ui.page == UI_PAGE_MW) {
+        if (b == 3) {
+            s_ui.help_back = UI_PAGE_MW;
+            s_ui.page = UI_PAGE_RF_HELP;
+        } else if (b == 13) {
+            nrf_aux_mw_reset();
+        } else if (b == 4 || b == 14) {
+            nrf_aux_mw(false);
+            finder_wifi_resume();
+            s_ui.page = UI_PAGE_MENU;
+        }
+        return;
+    }
+
     if (s_ui.page == UI_PAGE_RF_HELP) {
         if (b == 4 || b == 14 || b == 3) {
-            s_ui.page = UI_PAGE_RF_SCAN;
+            s_ui.page = s_ui.help_back;
         }
         return;
     }
@@ -302,6 +377,10 @@ static void print_help(void)
     ESP_LOGI("cli", "  ui ap|detail|stas|rf|help|color|find  jump to a UI page (debug)");
     ESP_LOGI("cli", "  rfdata                dump NRF scan peak/avg/age/hits");
     ESP_LOGI("cli", "  wifioff / wifion      pause/resume ESP32 Wi-Fi (RF scan test)");
+    ESP_LOGI("cli", "  mw                    fixed 2450 MHz observation (NRF CH50)");
+    ESP_LOGI("cli", "  mw off | mw reset     back to 13 channels / clear MW stats");
+    ESP_LOGI("cli", "  pro                   RF Scan Pro: 126 x 1MHz sweep + PC list");
+    ESP_LOGI("cli", "  pro off | reset | list  stop / clear / dump high-energy bands");
     ESP_LOGI("cli", "  btn 1..4 [long]       emulate a short/long K1..K4 press");
     ESP_LOGI("cli", "  page                  print the current UI page");
     ESP_LOGI("cli", "  stream [ms]           periodic RF/status line (0=off, default 1000)");
@@ -428,14 +507,26 @@ static void stream_set(uint32_t ms)
     s_stream_next = (uint32_t)(esp_timer_get_time() / 1000) + ms;
 }
 
+typedef struct {
+    bool mw;          /* 2450 MHz fixed mode */
+    int ch;           /* 0-based scan channel, -1 when none */
+    uint32_t cycles;
+    uint32_t win;
+    uint8_t peak;
+    uint8_t avg;
+    uint32_t hits;
+    uint32_t total;
+    uint16_t h10;
+    uint32_t age_s;
+} rf_line_t;
+
 /* Expand the user template for one RF sample.  Unknown escapes are kept
  * literally so a typo is visible instead of silently dropped. */
-static void rf_format_line(char *out, size_t cap, const nrf_scan_ch_t *sc,
-                           int ch, uint32_t cycles, uint32_t win)
+static void rf_format_line(char *out, size_t cap, const rf_line_t *v)
 {
     size_t o = 0;
     uint32_t rate10 = 0;
-    if (ch >= 0 && win) rate10 = (uint32_t)sc[ch].hits_10s * 10u / win;
+    if (v->win && v->h10) rate10 = (uint32_t)v->h10 * 10u / v->win;
 
     for (const char *p = s_rf_fmt; *p && o + 1 < cap; p++) {
         if (*p != '%') {
@@ -449,21 +540,21 @@ static void rf_format_line(char *out, size_t cap, const nrf_scan_ch_t *sc,
         switch (*p) {
         case '%': snprintf(fld, sizeof(fld), "%%"); break;
         case 'S': snprintf(fld, sizeof(fld), "%lu",
-                           (unsigned long)cycles); break;
+                           (unsigned long)v->cycles); break;
         case 'c':
-            if (ch < 0) snprintf(fld, sizeof(fld), "--");
-            else snprintf(fld, sizeof(fld), "%d", ch + 1);
+            if (v->mw) snprintf(fld, sizeof(fld), "MW");
+            else if (v->ch < 0) snprintf(fld, sizeof(fld), "--");
+            else snprintf(fld, sizeof(fld), "%d", v->ch + 1);
             break;
-        case 'p': snprintf(fld, sizeof(fld), "%u", ch < 0 ? 0 : sc[ch].peak); break;
-        case 'h': snprintf(fld, sizeof(fld), "%u", ch < 0 ? 0 : sc[ch].hits); break;
-        case 't': snprintf(fld, sizeof(fld), "%u", ch < 0 ? 0 : sc[ch].sweeps); break;
-        case '0': snprintf(fld, sizeof(fld), "%u", ch < 0 ? 0 : sc[ch].hits_10s); break;
+        case 'p': snprintf(fld, sizeof(fld), "%u", v->peak); break;
+        case 'h': snprintf(fld, sizeof(fld), "%lu", (unsigned long)v->hits); break;
+        case 't': snprintf(fld, sizeof(fld), "%lu", (unsigned long)v->total); break;
+        case '0': snprintf(fld, sizeof(fld), "%u", v->h10); break;
         case 'r': snprintf(fld, sizeof(fld), "%lu.%lu",
                            (unsigned long)(rate10 / 10),
                            (unsigned long)(rate10 % 10)); break;
-        case 'w': snprintf(fld, sizeof(fld), "%lu", (unsigned long)win); break;
-        case 'a': snprintf(fld, sizeof(fld), "%lu",
-                           ch < 0 ? 0 : (unsigned long)(sc[ch].peak_age_ms / 1000)); break;
+        case 'w': snprintf(fld, sizeof(fld), "%lu", (unsigned long)v->win); break;
+        case 'a': snprintf(fld, sizeof(fld), "%lu", (unsigned long)v->age_s); break;
         default:
             fld[0] = '%';
             fld[1] = *p;
@@ -479,10 +570,94 @@ static void rf_format_line(char *out, size_t cap, const nrf_scan_ch_t *sc,
     out[o] = 0;
 }
 
+static void pro_print_spectrum(uint32_t cycles)
+{
+    static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
+    nrf_aux_pro_get(d, NRF_PRO_CHANNELS);
+
+    char line[160];
+    int o = snprintf(line, sizeof(line), "pro S=%lu 2400:", (unsigned long)cycles);
+    for (int i = 0; i < NRF_PRO_CHANNELS && o + 1 < (int)sizeof(line); i++) {
+        int lv = d[i].peak / 10;
+        if (lv > 9) lv = 9;
+        line[o++] = (char)('0' + lv);
+    }
+    line[o] = 0;
+    ESP_LOGI("pro", "%s", line);
+}
+
+static void pro_print_list(void)
+{
+    static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
+    nrf_aux_pro_get(d, NRF_PRO_CHANNELS);
+
+    int top = 0;
+    for (int i = 1; i < NRF_PRO_CHANNELS; i++)
+        if (d[i].peak > d[top].peak) top = i;
+    if (d[top].peak)
+        ESP_LOGI("pro", "top %uMHz pk=%u%%", 2400 + top, d[top].peak);
+
+    int bands = 0;
+    int start = -1;
+    for (int i = 0; i <= NRF_PRO_CHANNELS; i++) {
+        bool hot = i < NRF_PRO_CHANNELS && d[i].peak >= 50;
+        if (hot && start < 0) start = i;
+        if (!hot && start >= 0) {
+            int end = i - 1;
+            uint8_t pk = 0;
+            unsigned long hits = 0, sweeps = 0;
+            for (int j = start; j <= end; j++) {
+                if (d[j].peak > pk) pk = d[j].peak;
+                hits += d[j].hits;
+                sweeps += d[j].sweeps;
+            }
+            ESP_LOGI("pro", "hot %u-%uMHz pk=%u%% hit=%lu/%lu",
+                     2400 + start, 2400 + end, pk, hits, sweeps);
+            bands++;
+            start = -1;
+        }
+    }
+    if (!bands) ESP_LOGI("pro", "hot: none (peak < 50%%)");
+}
+
 /* Compact one-line telemetry for the PC, independent of what the screen
  * shows.  RF SCAN data wins when the NRF scan is running. */
 static void stream_emit(void)
 {
+    if (nrf_aux_pro_active()) {
+        static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
+        nrf_aux_pro_get(d, NRF_PRO_CHANNELS);
+        int top = 0;
+        for (int i = 1; i < NRF_PRO_CHANNELS; i++)
+            if (d[i].peak > d[top].peak) top = i;
+        ESP_LOGI("stream", "pro S=%lu top=%uMHz pk=%u%%",
+                 (unsigned long)nrf_aux_pro_cycles(), 2400 + top, d[top].peak);
+        return;
+    }
+
+    if (nrf_aux_mw_active()) {
+        nrf_mw_t mw;
+        nrf_aux_mw_get(&mw);
+        uint32_t win = nrf_aux_mw_elapsed_ms() / 1000;
+        if (win > 10) win = 10;
+        rf_line_t v = {
+            .mw = true,
+            .ch = -1,
+            .cycles = mw.sweeps,
+            .win = win,
+            .peak = mw.peak,
+            .avg = mw.avg,
+            .hits = mw.hits,
+            .total = mw.sweeps,
+            .h10 = mw.hits_10s,
+            .age_s = mw.peak_age_ms / 1000,
+        };
+        char line[160];
+        rf_format_line(line, sizeof(line), &v);
+        ESP_LOGI("stream", "%s", line);
+        return;
+    }
+
     if (nrf_aux_scan_active()) {
         nrf_scan_ch_t sc[NRF_SCAN_CHANNELS];
         nrf_aux_scan_get(sc, NRF_SCAN_CHANNELS);
@@ -499,8 +674,22 @@ static void stream_emit(void)
         uint32_t win = nrf_aux_scan_elapsed_ms() / 1000;
         if (win > 10) win = 10;
 
+        rf_line_t v = {
+            .mw = false,
+            .ch = ch,
+            .cycles = nrf_aux_scan_cycles(),
+            .win = win,
+        };
+        if (ch >= 0) {
+            v.peak = sc[ch].peak;
+            v.avg = sc[ch].avg;
+            v.hits = sc[ch].hits;
+            v.total = sc[ch].sweeps;
+            v.h10 = sc[ch].hits_10s;
+            v.age_s = sc[ch].peak_age_ms / 1000;
+        }
         char line[160];
-        rf_format_line(line, sizeof(line), sc, ch, nrf_aux_scan_cycles(), win);
+        rf_format_line(line, sizeof(line), &v);
         ESP_LOGI("stream", "%s", line);
         return;
     }
@@ -537,6 +726,8 @@ static const char *page_name(int page)
     case UI_PAGE_AP_STAS: return "ap-stas";
     case UI_PAGE_RF_SCAN: return "rf-scan";
     case UI_PAGE_RF_HELP: return "rf-help";
+    case UI_PAGE_MW: return "mw";
+    case UI_PAGE_RF_PRO: return "rf-pro";
     case UI_PAGE_COLOR_TEST: return "color";
     default: return "--";
     }
@@ -607,8 +798,11 @@ static void handle_line(char *line)
         }
     } else if (!strncmp(line, "ui ", 3)) {
         const char *arg = line + 3;
-        if (strcmp(arg, "rf") != 0 && strcmp(arg, "help") != 0) {
+        if (strcmp(arg, "rf") != 0 && strcmp(arg, "help") != 0 &&
+            strcmp(arg, "mw") != 0 && strcmp(arg, "pro") != 0) {
             nrf_aux_scan(false);
+            nrf_aux_mw(false);
+            nrf_aux_pro(false);
             finder_wifi_resume();
         }
         if (!strcmp(arg, "ap")) ap_list_open();
@@ -618,12 +812,32 @@ static void handle_line(char *line)
             ap_sta_refresh();
             s_ui.page = UI_PAGE_AP_STAS;
         } else if (!strcmp(arg, "rf")) {
+            nrf_aux_mw(false);
+            nrf_aux_pro(false);
             finder_wifi_pause();
             nrf_aux_scan(true);
             s_ui.page = UI_PAGE_RF_SCAN;
+        } else if (!strcmp(arg, "mw")) {
+            nrf_aux_scan(false);
+            nrf_aux_pro(false);
+            finder_wifi_pause();
+            nrf_aux_mw(true);
+            s_ui.page = UI_PAGE_MW;
+        } else if (!strcmp(arg, "pro")) {
+            nrf_aux_scan(false);
+            nrf_aux_mw(false);
+            finder_wifi_pause();
+            nrf_aux_pro(true);
+            s_pro_printed = 0;
+            s_ui.pro_scroll = 0;
+            s_ui.page = UI_PAGE_RF_PRO;
+            ESP_LOGI("pro", "start: 2400..2525MHz step 1MHz, S=sweep");
         } else if (!strcmp(arg, "help")) {
+            nrf_aux_mw(false);
+            nrf_aux_pro(false);
             finder_wifi_pause();
             nrf_aux_scan(true);
+            s_ui.help_back = UI_PAGE_RF_SCAN;
             s_ui.page = UI_PAGE_RF_HELP;
         } else if (!strcmp(arg, "color")) {
             s_ui.page = UI_PAGE_COLOR_TEST;
@@ -639,7 +853,7 @@ static void handle_line(char *line)
         if (got >= 1 && n >= 1 && n <= 4) {
             bool lng = got >= 2 &&
                        (mode[0] == 'l' || mode[0] == 'L' || mode[0] == 'h');
-            s_button_event = lng ? 10 + n : n;
+            set_button_event(lng ? 10 + n : n);
             ESP_LOGI("cli", "button %d %s", n, lng ? "long" : "short");
         } else {
             ESP_LOGW("cli", "usage: btn 1..4 [long]");
@@ -666,7 +880,7 @@ static void handle_line(char *line)
         char k = (char)tolower((unsigned char)line[0]);
         int btn = k == 'a' ? 1 : k == 'd' ? 2 : k == 's' ? 3 : 4;
         bool lng = isupper((unsigned char)line[0]) != 0;
-        s_button_event = lng ? 10 + btn : btn;
+        set_button_event(lng ? 10 + btn : btn);
         ESP_LOGI("cli", "key '%c' -> K%d %s", line[0], btn,
                  lng ? "long" : "short");
     } else if (!strcmp(line, "fmt")) {
@@ -683,6 +897,47 @@ static void handle_line(char *line)
         ESP_LOGI("cli", "page=%s(%d) menu_sel=%d theme=%d wifi=%d",
                  page_name(s_ui.page), (int)s_ui.page, s_ui.menu_sel,
                  st7735_theme(), s_view.wifi_ok);
+    } else if (!strcmp(line, "mw")) {
+        nrf_aux_scan(false);
+        finder_wifi_pause();
+        nrf_aux_mw(true);
+        s_ui.page = UI_PAGE_MW;
+        ESP_LOGI("cli", "MW 2450 on (NRF RF_CH=50)");
+    } else if (!strcmp(line, "mw off")) {
+        nrf_aux_mw(false);
+        if (s_ui.page == UI_PAGE_MW ||
+            (s_ui.page == UI_PAGE_RF_HELP && s_ui.help_back == UI_PAGE_MW)) {
+            nrf_aux_scan(true);
+            s_ui.help_back = UI_PAGE_RF_SCAN;
+            s_ui.page = UI_PAGE_RF_SCAN;
+        }
+        ESP_LOGI("cli", "MW 2450 off, 13-channel scan");
+    } else if (!strcmp(line, "mw reset")) {
+        nrf_aux_mw_reset();
+        ESP_LOGI("cli", "MW 2450 stats reset");
+    } else if (!strcmp(line, "pro")) {
+        nrf_aux_scan(false);
+        nrf_aux_mw(false);
+        finder_wifi_pause();
+        nrf_aux_pro(true);
+        s_pro_printed = 0;
+        s_ui.pro_scroll = 0;
+        s_ui.page = UI_PAGE_RF_PRO;
+        ESP_LOGI("pro", "start: 2400..2525MHz step 1MHz, S=sweep");
+    } else if (!strcmp(line, "pro off")) {
+        nrf_aux_pro(false);
+        pro_print_list();
+        if (s_ui.page == UI_PAGE_RF_PRO) {
+            nrf_aux_scan(true);
+            s_ui.page = UI_PAGE_RF_SCAN;
+        }
+        ESP_LOGI("pro", "stopped");
+    } else if (!strcmp(line, "pro reset")) {
+        nrf_aux_pro_reset();
+        s_pro_printed = 0;
+        ESP_LOGI("pro", "stats reset");
+    } else if (!strcmp(line, "pro list")) {
+        pro_print_list();
     } else if (!strcmp(line, "wifioff")) {
         finder_wifi_pause();
     } else if (!strcmp(line, "wifion")) {
@@ -752,7 +1007,7 @@ static void usb_console_task(void *arg)
                       lk == 'w' ? 4 : 0;
             if (btn) {
                 bool lng = isupper((unsigned char)k) != 0;
-                s_button_event = lng ? 10 + btn : btn;
+                set_button_event(lng ? 10 + btn : btn);
                 ESP_LOGI("cli", "keypad '%c' -> K%d %s", k, btn,
                          lng ? "long" : "short");
             }
@@ -857,9 +1112,12 @@ void app_main(void)
     ESP_LOGI(TAG, "ready");
     for (;;) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-        int b = s_button_event;
-        s_button_event = 0;
-        if (b && (int32_t)(now - s_btn_ready_ms) >= 0) handle_event(b);
+        int b = take_button_event();
+        if (b && (int32_t)(now - s_btn_ready_ms) >= 0) {
+            int before = (int)s_ui.page;
+            handle_event(b);
+            ESP_LOGI("cli", "btn %d page %d->%d", b, before, (int)s_ui.page);
+        }
 
         finder_poll(&s_view);
 
@@ -877,6 +1135,15 @@ void app_main(void)
             if ((int32_t)(now - s_stream_next) >= 0)
                 s_stream_next = now + s_stream_ms;
             stream_emit();
+        }
+
+        if (nrf_aux_pro_active()) {
+            uint32_t cyc = nrf_aux_pro_cycles();
+            if (cyc != s_pro_printed) {
+                s_pro_printed = cyc;
+                pro_print_spectrum(cyc);
+                if ((cyc % 5) == 0) pro_print_list();
+            }
         }
 
         if (now - last_draw >= 100) {

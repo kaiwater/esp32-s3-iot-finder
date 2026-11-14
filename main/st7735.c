@@ -850,6 +850,8 @@ static void menu_label(int item, const finder_view_t *v, char *out, size_t n)
         break;
     case UI_MENU_SSID: snprintf(out, n, "AP LIST"); break;
     case UI_MENU_RFSCAN: snprintf(out, n, "RF SCAN"); break;
+    case UI_MENU_MW: snprintf(out, n, "MW 2450"); break;
+    case UI_MENU_RFPRO: snprintf(out, n, "RF SCAN PRO"); break;
     case UI_MENU_INFO: snprintf(out, n, "INFO"); break;
     case UI_MENU_REBOOT: snprintf(out, n, "REBOOT"); break;
     default: snprintf(out, n, "--"); break;
@@ -867,10 +869,16 @@ static void draw_menu_page(const finder_view_t *v, const ui_state_t *ui)
     text3x5(126, 3, "* BACK", 1, COL_DIM);
     rect(0, 12, WIDTH, 1, COL_DARK);
 
-    for (int i = 0; i < UI_MENU_COUNT; i++) {
-        int y = 20 + i * 12;
+    /* 9 rows fit; RF SCAN PRO made the list scroll. */
+    const int rows = 9;
+    int first = 0;
+    if (sel >= rows) first = sel - rows + 1;
+    for (int row = 0; row < rows; row++) {
+        int i = first + row;
+        if (i >= UI_MENU_COUNT) break;
+        int y = 18 + row * 11;
         if (i == sel) {
-            rect(0, y - 2, WIDTH, 13, COL_DARK);
+            rect(0, y - 2, WIDTH, 12, COL_DARK);
             text3x5(4, y, ">", 2, COL_ACCENT);
         }
         menu_label(i, v, buf, sizeof(buf));
@@ -1039,6 +1047,119 @@ static void draw_rf_scan_page(const ui_state_t *ui)
         if (has_hit && 158 - hl * 4 * hs + hs >= 130)
             text3x5(158 - hl * 4 * hs + hs - 16, 20, "HIT", 1, COL_DIM);
     }
+    text3x5(2, 119, "# HELP  HOLD# RESET  * BACK", 1, COL_ACCENT);
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+}
+
+#define PRO_VIS 76 /* 76 channels x 2 px */
+
+static void draw_rf_pro_page(const ui_state_t *ui)
+{
+    nrf_pro_ch_t d[NRF_PRO_CHANNELS];
+    nrf_aux_pro_get(d, NRF_PRO_CHANNELS);
+
+    int scroll = ui->pro_scroll;
+    if (scroll < 0) scroll = 0;
+    if (scroll > NRF_PRO_CHANNELS - PRO_VIS) scroll = NRF_PRO_CHANNELS - PRO_VIS;
+
+    char buf[48];
+    clear_panel();
+    text3x5(2, 2, "RF SCAN PRO", 2, COL_ACCENT);
+    snprintf(buf, sizeof(buf), "%luMHz", (unsigned long)nrf_aux_pro_cycles());
+    text3x5_right(158, 3, buf, 1, COL_DIM);
+
+    const int top = 24, bottom = 100, x0 = 2;
+    rect(x0, top, PRO_VIS * 2, bottom - top, COL_RF_BG);
+    for (int i = 0; i < PRO_VIS; i++) {
+        int ch = scroll + i;
+        if (ch >= NRF_PRO_CHANNELS) break;
+        int x = x0 + i * 2;
+        uint8_t pk = d[ch].peak;
+        if (!pk) continue;
+        int h = (bottom - top) * pk / 100;
+        if (h < 1) h = 1;
+        rect(x, bottom - h, 1, h, pk >= 80 ? COL_RF_HOT : COL_RF_PEAK);
+    }
+
+    /* MHz labels at the window edges plus a small scroll bar. */
+    snprintf(buf, sizeof(buf), "%u", 2400 + scroll);
+    text3x5(2, 104, buf, 1, COL_DIM);
+    snprintf(buf, sizeof(buf), "%u", 2400 + scroll + PRO_VIS - 1);
+    text3x5_right(156, 104, buf, 1, COL_DIM);
+    int bar_x = 2 + (WIDTH - 4) * scroll / (NRF_PRO_CHANNELS - PRO_VIS);
+    rect(2, 111, WIDTH - 4, 1, COL_RF_BG);
+    rect(bar_x, 110, 8, 3, COL_ACCENT);
+
+    /* Strongest channel in the visible window. */
+    int best = -1;
+    for (int i = 0; i < PRO_VIS; i++) {
+        int ch = scroll + i;
+        if (ch >= NRF_PRO_CHANNELS) break;
+        if (best < 0 || d[ch].peak > d[best].peak) best = ch;
+    }
+    if (best >= 0 && d[best].peak) {
+        snprintf(buf, sizeof(buf), "PK %u%% @ %uMHz", d[best].peak,
+                 2400 + best);
+        text3x5(2, 114, buf, 1, COL_WARN);
+    } else {
+        text3x5(2, 114, "NO ENERGY YET", 1, COL_DIM);
+    }
+
+    text3x5(2, 121, "<> SCROLL  # LIST  * BACK", 1, COL_ACCENT);
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+}
+
+static void draw_mw_page(void)
+{
+    nrf_mw_t mw;
+    nrf_aux_mw_get(&mw);
+
+    char buf[40];
+    clear_panel();
+    text3x5(2, 2, "MW 2450", 2, COL_ACCENT);
+    text3x5_right(158, 3, "2450MHz RPD", 1, COL_DIM);
+
+    const int x = 2, y = 20, w = 156, h = 12;
+    rect(x, y, w, h, COL_RF_BG);
+    if (mw.peak) {
+        int hp = w * mw.peak / 100;
+        if (hp < 1) hp = 1;
+        rect(x, y, hp, h, mw.peak >= 80 ? COL_RF_HOT : COL_RF_PEAK);
+    }
+    if (mw.avg) {
+        int ha = w * mw.avg / 100;
+        if (ha < 1) ha = 1;
+        rect(x, y + 3, ha, h - 6, COL_RF_AVG);
+    }
+
+    snprintf(buf, sizeof(buf), "PK %u%%", mw.peak);
+    text3x5(2, 36, buf, 2, COL_WARN);
+    snprintf(buf, sizeof(buf), "AVG %u%%", mw.avg);
+    text3x5(86, 36, buf, 2, COL_DIM);
+
+    text3x5(2, 59, "HIT", 1, COL_DIM);
+    snprintf(buf, sizeof(buf), "%lu/%lu", (unsigned long)mw.hits,
+             (unsigned long)mw.sweeps);
+    int hl = (int)strlen(buf);
+    text3x5(26, hl <= 6 ? 55 : 59, buf, hl <= 6 ? 3 : 2, COL_WARN);
+
+    uint32_t win = nrf_aux_mw_elapsed_ms() / 1000;
+    if (win > 10) win = 10;
+    if (win) {
+        uint32_t tenths = (uint32_t)mw.hits_10s * 10u / win;
+        snprintf(buf, sizeof(buf), "%lu.%lu/s",
+                 (unsigned long)(tenths / 10), (unsigned long)(tenths % 10));
+    } else {
+        snprintf(buf, sizeof(buf), "--/s");
+    }
+    text3x5_right(158, 57, buf, 2, COL_ACCENT);
+
+    snprintf(buf, sizeof(buf), "AGE %lus", (unsigned long)(mw.peak_age_ms / 1000));
+    text3x5(2, 76, buf, 1, COL_DIM);
+    text3x5(2, 86, "FIXED CH50  2400+50", 1, COL_DIM);
+
     text3x5(2, 119, "# HELP  HOLD# RESET  * BACK", 1, COL_ACCENT);
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
@@ -1357,6 +1478,8 @@ void st7735_draw_finder(const finder_view_t *v, const wnm_clock_view_t *c,
     case UI_PAGE_AP_STAS: draw_sta_list_page(ui); break;
     case UI_PAGE_RF_SCAN: draw_rf_scan_page(ui); break;
     case UI_PAGE_RF_HELP: draw_rf_help_page(); break;
+    case UI_PAGE_MW: draw_mw_page(); break;
+    case UI_PAGE_RF_PRO: draw_rf_pro_page(ui); break;
     case UI_PAGE_COLOR_TEST: draw_color_test_page(); break;
     case UI_PAGE_FIND:
     default: draw_finder_page(v, c); break;

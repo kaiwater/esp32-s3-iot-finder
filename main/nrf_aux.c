@@ -37,6 +37,19 @@ static uint32_t s_last_ms[NRF_SCAN_CHANNELS];
 static uint8_t s_hit_bin[NRF_SCAN_CHANNELS][10];
 static uint8_t s_bin_idx;
 static uint32_t s_bin_last_s;
+static volatile bool s_mw;
+static bool s_mw_tuned;
+static nrf_mw_t s_mw_stat;
+static uint32_t s_mw_peak_ms;
+static uint32_t s_mw_last_ms;
+static uint32_t s_mw_start_ms;
+static uint16_t s_mw_bin[10];
+static uint8_t s_mw_bin_idx;
+static uint32_t s_mw_bin_last_s;
+static volatile bool s_pro;
+static nrf_pro_ch_t s_pro_data[NRF_PRO_CHANNELS];
+static uint32_t s_pro_cycles;
+static uint32_t s_pro_start_ms;
 #define RF_HIT_PCT 25u
 static const int s_csn[NRF_MODULE_COUNT] = NRF_CSN_PINS;
 static const int s_ce[NRF_MODULE_COUNT] = NRF_CE_PINS;
@@ -151,6 +164,61 @@ static void scan_store(int ch, uint8_t pct)
     portEXIT_CRITICAL(&s_scan_mux);
 }
 
+static void mw_bins_advance(uint32_t now_s)
+{
+    if (s_mw_bin_last_s == 0) {
+        s_mw_bin_last_s = now_s;
+        return;
+    }
+    if (now_s == s_mw_bin_last_s) return;
+
+    uint32_t delta = now_s - s_mw_bin_last_s;
+    if (delta >= 10) {
+        memset(s_mw_bin, 0, sizeof(s_mw_bin));
+        s_mw_bin_idx = 0;
+        s_mw_bin_last_s = now_s;
+        return;
+    }
+    while (s_mw_bin_last_s < now_s) {
+        s_mw_bin_idx = (uint8_t)((s_mw_bin_idx + 1) % 10);
+        s_mw_bin[s_mw_bin_idx] = 0;
+        s_mw_bin_last_s++;
+    }
+}
+
+static void mw_store(uint8_t pct)
+{
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
+    portENTER_CRITICAL(&s_scan_mux);
+    mw_bins_advance(now / 1000);
+    s_mw_stat.last = pct;
+    s_mw_stat.sweeps++;
+    if (pct >= RF_HIT_PCT) {
+        s_mw_stat.hits++;
+        if (s_mw_bin[s_mw_bin_idx] < 0xFFFF) s_mw_bin[s_mw_bin_idx]++;
+    }
+    if (pct > 0 && pct >= s_mw_stat.peak) {
+        s_mw_stat.peak = pct;
+        s_mw_peak_ms = now;   /* refresh age when the peak recurs */
+    }
+    if (pct > 0) s_mw_last_ms = now;
+    s_mw_stat.avg = (uint8_t)((s_mw_stat.avg * 3u + pct) / 4u);
+    portEXIT_CRITICAL(&s_scan_mux);
+}
+
+static void pro_store(int rf, uint8_t pct)
+{
+    portENTER_CRITICAL(&s_scan_mux);
+    nrf_pro_ch_t *c = &s_pro_data[rf];
+    c->last = pct;
+    c->sweeps++;
+    if (pct >= RF_HIT_PCT) c->hits++;
+    if (pct > c->peak) c->peak = pct;
+    c->avg = (uint8_t)((c->avg * 3u + pct) / 4u);
+    portEXIT_CRITICAL(&s_scan_mux);
+}
+
 static void try_second_radio(void)
 {
     if (!s_ok || s_ok2) return;
@@ -197,6 +265,48 @@ static void nrf_aux_task(void *arg)
                 try_second_radio();
             }
         }
+
+        if (s_pro) {
+            for (int rf = 0; rf < NRF_PRO_CHANNELS && s_pro; rf++) {
+                nrf_set_channel(&s_radio, (uint8_t)rf);
+                /* pdMS_TO_TICKS() is 0 at 100 Hz, so use busy waits for the
+                 * synthesiser/RX settle and yield once per 16 channels. */
+                esp_rom_delay_us(3000);
+                nrf_rx_mode(&s_radio);
+                esp_rom_delay_us(500);
+                unsigned high = 0;
+                for (int i = 0; i < 16; i++) {
+                    if (nrf_read_reg(&s_radio, REG_RPD) & 1u) high++;
+                    esp_rom_delay_us(500);
+                }
+                nrf_standby(&s_radio);
+                pro_store(rf, (uint8_t)(high * 100u / 16u));
+                if ((rf & 15) == 15) vTaskDelay(1);
+            }
+            if (s_pro) s_pro_cycles++;
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        if (s_mw) {
+            if (!s_mw_tuned) {
+                nrf_set_channel(&s_radio, 50); /* 2450 MHz */
+                vTaskDelay(pdMS_TO_TICKS(5));
+                nrf_rx_mode(&s_radio);
+                s_mw_tuned = true;
+            }
+            unsigned high = 0;
+            for (int i = 0; i < 16 && s_mw; i++) {
+                if (nrf_read_reg(&s_radio, REG_RPD) & 1u) high++;
+                esp_rom_delay_us(500);
+            }
+            if (s_mw) mw_store((uint8_t)(high * 100u / 16u));
+            /* One full tick (10 ms at 100 Hz): pdMS_TO_TICKS(1) is 0 and
+             * would starve the console/button tasks on this core. */
+            vTaskDelay(1);
+            continue;
+        }
+        s_mw_tuned = false;
 
         if (s_scan) {
             if (s_ok && s_ok2) {
@@ -374,4 +484,90 @@ uint32_t nrf_aux_scan_elapsed_ms(void)
 {
     if (!s_scan_start_ms) return 0;
     return (uint32_t)(esp_timer_get_time() / 1000) - s_scan_start_ms;
+}
+
+void nrf_aux_mw_reset(void)
+{
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    portENTER_CRITICAL(&s_scan_mux);
+    memset(&s_mw_stat, 0, sizeof(s_mw_stat));
+    memset(s_mw_bin, 0, sizeof(s_mw_bin));
+    s_mw_bin_idx = 0;
+    s_mw_bin_last_s = now;
+    s_mw_start_ms = now;
+    s_mw_peak_ms = 0;
+    s_mw_last_ms = 0;
+    portEXIT_CRITICAL(&s_scan_mux);
+}
+
+void nrf_aux_mw(bool on)
+{
+    if (on) nrf_aux_mw_reset();
+    s_mw = on;
+    if (!on) s_mw_tuned = false;
+}
+
+bool nrf_aux_mw_active(void)
+{
+    return s_mw;
+}
+
+uint32_t nrf_aux_mw_elapsed_ms(void)
+{
+    if (!s_mw_start_ms) return 0;
+    return (uint32_t)(esp_timer_get_time() / 1000) - s_mw_start_ms;
+}
+
+void nrf_aux_mw_get(nrf_mw_t *out)
+{
+    if (!out) return;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    portENTER_CRITICAL(&s_scan_mux);
+    *out = s_mw_stat;
+    uint16_t sum = 0;
+    for (int i = 0; i < 10; i++) sum += s_mw_bin[i];
+    out->hits_10s = sum;
+    out->peak_age_ms = out->peak ? now - s_mw_peak_ms : 0;
+    out->last_age_ms = out->last ? now - s_mw_last_ms : 0;
+    portEXIT_CRITICAL(&s_scan_mux);
+}
+
+void nrf_aux_pro_reset(void)
+{
+    portENTER_CRITICAL(&s_scan_mux);
+    memset(s_pro_data, 0, sizeof(s_pro_data));
+    s_pro_cycles = 0;
+    s_pro_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    portEXIT_CRITICAL(&s_scan_mux);
+}
+
+void nrf_aux_pro(bool on)
+{
+    if (on) nrf_aux_pro_reset();
+    s_pro = on;
+}
+
+bool nrf_aux_pro_active(void)
+{
+    return s_pro;
+}
+
+uint32_t nrf_aux_pro_cycles(void)
+{
+    return s_pro_cycles;
+}
+
+uint32_t nrf_aux_pro_elapsed_ms(void)
+{
+    if (!s_pro_start_ms) return 0;
+    return (uint32_t)(esp_timer_get_time() / 1000) - s_pro_start_ms;
+}
+
+void nrf_aux_pro_get(nrf_pro_ch_t *out, int max)
+{
+    if (!out || max <= 0) return;
+    if (max > NRF_PRO_CHANNELS) max = NRF_PRO_CHANNELS;
+    portENTER_CRITICAL(&s_scan_mux);
+    memcpy(out, s_pro_data, (size_t)max * sizeof(*out));
+    portEXIT_CRITICAL(&s_scan_mux);
 }
