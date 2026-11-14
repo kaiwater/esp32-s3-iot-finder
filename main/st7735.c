@@ -1053,62 +1053,128 @@ static void draw_rf_scan_page(const ui_state_t *ui)
 }
 
 #define PRO_VIS 76 /* 76 channels x 2 px */
+#define WF_ROWS 76 /* one row per sweep, 1.7 s each */
+
+static uint8_t s_wf[WF_ROWS][NRF_PRO_CHANNELS];
+static uint32_t s_wf_cycle;
+
+/* Scale an RGB565 colour towards black; used to fade old waterfall rows. */
+static uint16_t scale565(uint16_t c, int num, int den)
+{
+    int r = (c >> 11) & 0x1F;
+    int g = (c >> 5) & 0x3F;
+    int b = c & 0x1F;
+    r = r * num / den;
+    g = g * num / den;
+    b = b * num / den;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static void wf_push(const nrf_pro_ch_t *d)
+{
+    memmove(&s_wf[1][0], &s_wf[0][0], sizeof(s_wf[0]) * (WF_ROWS - 1));
+    for (int i = 0; i < NRF_PRO_CHANNELS; i++) s_wf[0][i] = d[i].last;
+}
 
 static void draw_rf_pro_page(const ui_state_t *ui)
 {
-    nrf_pro_ch_t d[NRF_PRO_CHANNELS];
+    static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
     nrf_aux_pro_get(d, NRF_PRO_CHANNELS);
 
     int scroll = ui->pro_scroll;
     if (scroll < 0) scroll = 0;
     if (scroll > NRF_PRO_CHANNELS - PRO_VIS) scroll = NRF_PRO_CHANNELS - PRO_VIS;
-    int view = ui->pro_view ? 1 : 0;
+    int view = ui->pro_view ? 1 : 0; /* 0 = waterfall, 1 = peak */
+
+    uint32_t cyc = nrf_aux_pro_cycles();
+    if (cyc != s_wf_cycle) {
+        if (cyc < s_wf_cycle || cyc == 0) {
+            memset(s_wf, 0, sizeof(s_wf));
+        } else {
+            uint32_t delta = cyc - s_wf_cycle;
+            if (delta > WF_ROWS) delta = WF_ROWS;
+            while (delta--) wf_push(d);
+        }
+        s_wf_cycle = cyc;
+    }
 
     char buf[48];
     clear_panel();
     text3x5(2, 2, "RF SCAN PRO", 2, COL_ACCENT);
-    text3x5_right(158, 3, view ? "PEAK" : "ACT", 1, COL_DIM);
-    snprintf(buf, sizeof(buf), "S=%lu", (unsigned long)nrf_aux_pro_cycles());
+    text3x5_right(158, 3, view ? "PEAK" : "WF", 1, COL_DIM);
+    snprintf(buf, sizeof(buf), "S=%lu", (unsigned long)cyc);
     text3x5(2, 14, buf, 1, COL_DIM);
 
     const int top = 24, bottom = 100, x0 = 2;
-    rect(x0, top, PRO_VIS * 2, bottom - top, COL_RF_BG);
-    for (int i = 0; i < PRO_VIS; i++) {
-        int ch = scroll + i;
-        if (ch >= NRF_PRO_CHANNELS) break;
-        int x = x0 + i * 2;
-        uint8_t val = view ? d[ch].peak : d[ch].heat;
-        if (!val) continue;
-        int h = (bottom - top) * val / 100;
-        if (h < 1) h = 1;
-        uint16_t col = val >= 80 ? COL_RF_HOT :
-                       (view ? COL_RF_PEAK : (val >= 50 ? COL_WARN : COL_RF_PEAK));
-        rect(x, bottom - h, 1, h, col);
+    if (view) {
+        rect(x0, top, PRO_VIS * 2, bottom - top, COL_RF_BG);
+        for (int i = 0; i < PRO_VIS; i++) {
+            int ch = scroll + i;
+            if (ch >= NRF_PRO_CHANNELS) break;
+            uint8_t pk = d[ch].peak;
+            if (!pk) continue;
+            int h = (bottom - top) * pk / 100;
+            if (h < 1) h = 1;
+            rect(x0 + i * 2, bottom - h, 1, h,
+                 pk >= 80 ? COL_RF_HOT : COL_RF_PEAK);
+        }
+    } else {
+        /* New sweep on top, older rows sink and darken. */
+        for (int row = 0; row < WF_ROWS; row++) {
+            int y = top + row;
+            int num = WF_ROWS - row + 10;
+            int den = WF_ROWS + 10;
+            for (int i = 0; i < PRO_VIS; i++) {
+                uint8_t v = s_wf[row][scroll + i];
+                if (!v) continue;
+                uint16_t base = v >= 80 ? COL_RF_HOT :
+                                (v >= 50 ? COL_WARN : COL_RF_PEAK);
+                rect(x0 + i * 2, y, 1, 1, scale565(base, num, den));
+            }
+        }
     }
 
-    /* MHz labels at the window edges plus a small scroll bar. */
-    snprintf(buf, sizeof(buf), "%u", 2400 + scroll);
-    text3x5(2, 104, buf, 1, COL_DIM);
-    snprintf(buf, sizeof(buf), "%u", 2400 + scroll + PRO_VIS - 1);
-    text3x5_right(156, 104, buf, 1, COL_DIM);
+    /* 20 MHz ticks inside the visible window. */
+    for (int mhz = 2400; mhz <= 2500; mhz += 20) {
+        int ch = mhz - 2400;
+        if (ch < scroll || ch >= scroll + PRO_VIS) continue;
+        int x = x0 + (ch - scroll) * 2;
+        if (x > WIDTH - 17) x = WIDTH - 17;
+        snprintf(buf, sizeof(buf), "%d", mhz);
+        text3x5(x, 104, buf, 1, COL_DIM);
+    }
     int bar_x = 2 + (WIDTH - 4) * scroll / (NRF_PRO_CHANNELS - PRO_VIS);
     rect(2, 111, WIDTH - 4, 1, COL_RF_BG);
     rect(bar_x, 110, 8, 3, COL_ACCENT);
 
-    /* Strongest channel in the visible window. */
     int best = -1;
     for (int i = 0; i < PRO_VIS; i++) {
         int ch = scroll + i;
         if (ch >= NRF_PRO_CHANNELS) break;
-        uint8_t val = view ? d[ch].peak : d[ch].heat;
-        uint8_t bv = best < 0 ? 0 : (view ? d[best].peak : d[best].heat);
+        uint8_t val = view ? d[ch].peak : d[ch].last;
+        uint8_t bv = best < 0 ? 0 : (view ? d[best].peak : d[best].last);
         if (best < 0 || val > bv) best = ch;
     }
-    uint8_t best_val = best < 0 ? 0 : (view ? d[best].peak : d[best].heat);
+    uint8_t best_val = best < 0 ? 0 : (view ? d[best].peak : d[best].last);
     if (best >= 0 && best_val) {
         snprintf(buf, sizeof(buf), "%s %u%% @ %uMHz", view ? "PK" : "ACT",
                  best_val, 2400 + best);
         text3x5(2, 114, buf, 1, COL_WARN);
+
+        if (view) {
+            /* Frequency callout next to the strongest bar. */
+            int bh = (bottom - top) * d[best].peak / 100;
+            if (bh < 1) bh = 1;
+            int bx = x0 + (best - scroll) * 2;
+            int ty = bottom - bh - 6;
+            if (ty < top) ty = top;
+            snprintf(buf, sizeof(buf), "%uMHz", 2400 + best);
+            int tw = (int)strlen(buf) * 4;
+            int tx = bx - tw / 2;
+            if (tx < 2) tx = 2;
+            if (tx > WIDTH - tw - 2) tx = WIDTH - tw - 2;
+            text3x5(tx, ty, buf, 1, COL_TEXT);
+        }
     } else {
         text3x5(2, 114, "NO ENERGY YET", 1, COL_DIM);
     }
