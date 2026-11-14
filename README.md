@@ -197,14 +197,18 @@ rf S=1155 ch=2 pk=100 hit=351/1155 h10=19 rate=1.9/s win=10s age=7s
 - 仓库自带脚本 `tools/finder-cli.ps1`，**默认自动找口并自动重连**：
 
 ```powershell
-.\tools\finder-cli.ps1 -ListPorts        # 列出 COM 口和描述
+.\tools\finder-cli.ps1 -ListPorts        # 列出 COM 口、描述和 VID/PID
 .\tools\finder-cli.ps1                   # 自动选口，交互模式
+.\tools\finder-cli.ps1 -Port COM4        # 直接指定
+.\tools\finder-cli.ps1 -Port COM4 -Stream 1000   # 连上就每秒输出 RF
 .\tools\finder-cli.ps1 -Command status -Seconds 2
-.\tools\finder-cli.ps1 -Command "btn 3"
 .\tools\finder-cli.ps1 -Command "btn 4 long"
 ```
 
-- 不加 `-Port` 时自动挑口：优先 USB CDC/JTAG，规避 CH340/CP210/FTDI 这类 UART 桥
+- 自动选口按 **VID_303A**（ESP32-S3 原生 USB）识别，不再看名字；CH340/CP210/FTDI 这类 UART 桥会被降权
+- 连上后会先发一条 `page` 并等回复：能回说明**输入和输出都通**；没回复会直接提示
+  `no reply to 'page': USB input may not reach the firmware`
+- 控制台安静是正常的：没有新日志时不会刷屏，用 `-Stream 1000` 或输入 `stream 1000` 才会有持续数据
 - **烧录/重启后口消失会自动等待重连**（默认最多等 30 秒，`-ReconnectSeconds 0` 表示一直等）
 - 重连后如果 COM 号变了，会重新扫描，不需要改参数
 - 一条命令模式在断线重连后会自动重发当前命令（最多 3 次）

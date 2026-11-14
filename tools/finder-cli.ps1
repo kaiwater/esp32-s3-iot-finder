@@ -4,9 +4,9 @@
 # disappears, which is what happens while a new firmware boots.
 #
 # Examples:
-#   .\finder-cli.ps1                      # auto port, interactive
 #   .\finder-cli.ps1 -ListPorts
-#   .\finder-cli.ps1 -Port COM7
+#   .\finder-cli.ps1 -Port COM4             # explicit port
+#   .\finder-cli.ps1 -Port COM4 -Stream 1000  # live RF lines every second
 #   .\finder-cli.ps1 -Command status -Seconds 2
 #   .\finder-cli.ps1 -Command "btn 4 long"
 #
@@ -26,21 +26,41 @@ param(
     # 0 = retry forever.
     [int]$ReconnectSeconds = 30,
 
+    # After connecting, turn on 'stream <ms>' so the PC gets RF data.
+    # 0 = leave streaming off.
+    [int]$Stream = 0,
+
     [switch]$ListPorts
 )
 
 $ErrorActionPreference = "Stop"
 $script:LastPort = $null
 
-function Get-PortDescription([string]$name) {
-    $desc = ""
+function Get-PortDevice([string]$name) {
+    $dev = $null
     try {
-        $dev = Get-CimInstance -ClassName Win32_PnPEntity `
-            -Filter "Name LIKE '%$name%'" -ErrorAction Stop |
-            Select-Object -First 1
-        if ($dev) { $desc = [string]$dev.Name }
+        $dev = Get-CimInstance -ClassName Win32_SerialPort -ErrorAction Stop |
+            Where-Object { $_.DeviceID -eq $name } | Select-Object -First 1
     } catch { }
-    return $desc
+    if (-not $dev) {
+        try {
+            $dev = Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction Stop |
+                Where-Object { $_.Name -like "*($name)*" } | Select-Object -First 1
+        } catch { }
+    }
+    return $dev
+}
+
+function Get-PortSummary([string]$name) {
+    $dev = Get-PortDevice $name
+    $desc = ""
+    $pnp = ""
+    if ($dev) {
+        if ($dev.Name) { $desc = [string]$dev.Name }
+        elseif ($dev.Description) { $desc = [string]$dev.Description }
+        if ($dev.PNPDeviceID) { $pnp = [string]$dev.PNPDeviceID }
+    }
+    return [pscustomobject]@{ Desc = $desc; Pnp = $pnp }
 }
 
 if ($ListPorts) {
@@ -49,8 +69,9 @@ if ($ListPorts) {
         Write-Host "No COM ports found."
     } else {
         foreach ($n in $names) {
-            $desc = Get-PortDescription $n
-            Write-Host ("{0,-8} {1}" -f $n, $desc)
+            $info = Get-PortSummary $n
+            Write-Host ("{0,-8} {1}" -f $n, $info.Desc)
+            if ($info.Pnp) { Write-Host ("         {0}" -f $info.Pnp) }
         }
     }
     exit 0
@@ -62,12 +83,15 @@ function Find-FinderPort {
     $bestScore = -999
     foreach ($n in $names) {
         if ([string]::IsNullOrEmpty($n)) { continue }
-        $desc = Get-PortDescription $n
+        $info = Get-PortSummary $n
         $score = 0
-        # Prefer the native USB CDC/JTAG port, de-prefer UART bridges.
-        if ($desc -match "JTAG|CDC|Serial Device") { $score += 5 }
-        if ($desc -match "CH340|CH341|CP210|FTDI|PL2303|Silicon Labs") { $score -= 10 }
-        if ($script:LastPort -and $n -eq $script:LastPort) { $score += 5 }
+        # The ESP32-S3 USB-Serial/JTAG is VID 303A.  This is language
+        # independent, unlike the device description.
+        if ($info.Pnp -match "VID_303A") { $score += 30 }
+        if ($info.Desc -match "JTAG|CDC|Serial Device") { $score += 5 }
+        # UART bridges used for flashing are not the console.
+        if ($info.Pnp -match "VID_1A86|VID_10C4|VID_0403|VID_067B") { $score -= 20 }
+        if ($script:LastPort -and $n -eq $script:LastPort) { $score += 10 }
         if ($score -gt $bestScore) {
             $bestScore = $score
             $best = $n
@@ -173,9 +197,37 @@ try {
         Write-Host ""
     } else {
         Write-Host "Connected. Type a command and press Enter. Ctrl+C quits."
+        Write-Host "A silent console is normal when nothing is logging; try 'page' or 'stream 1000'."
 
         $keyboard = $true
         try { [void][Console]::KeyAvailable } catch { $keyboard = $false }
+
+        function Send-Setup {
+            if ($Stream -gt 0) {
+                try { $sp.WriteLine("stream $Stream") } catch { }
+            }
+        }
+
+        # Prove both directions right away instead of waiting for a log.
+        $probeText = ""
+        try { $sp.WriteLine("page") } catch { }
+        $probeEnd = (Get-Date).AddMilliseconds(900)
+        while ((Get-Date) -lt $probeEnd) {
+            if ($sp.BytesToRead -gt 0) {
+                $chunk = $sp.ReadExisting()
+                Write-Host -NoNewline $chunk
+                $probeText += $chunk
+            } else {
+                Start-Sleep -Milliseconds 30
+            }
+        }
+        if ($probeText -notmatch "page=") {
+            Write-Host ""
+            Write-Host "[finder] no reply to 'page': USB input may not reach the firmware."
+            Write-Host "[finder] check 'status' on the UART: usb host/drv/rx counters."
+        } else {
+            Send-Setup
+        }
 
         $typed = ""
         while ($true) {
@@ -209,6 +261,7 @@ try {
                 Write-Host "[finder] port lost, reconnecting... (Ctrl+C quits)"
                 $sp = Connect-Finder $Port 0
                 if (-not $sp) { break }
+                Send-Setup
                 $typed = ""
             }
         }
