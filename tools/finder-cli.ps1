@@ -97,9 +97,19 @@ function Connect-Finder([string]$want, [int]$timeoutSec) {
                 $sp.ReadTimeout = 200
                 $sp.WriteTimeout = 1000
                 $sp.NewLine = "`r`n"
+                # Do not assert DTR/RTS: the ESP32-S3 USB-Serial/JTAG can
+                # interpret those lines as a chip reset.
+                $sp.DtrEnable = $false
+                $sp.RtsEnable = $false
                 $sp.Open()
+                $sp.DtrEnable = $false
+                $sp.RtsEnable = $false
                 $script:LastPort = $name
                 Write-Host ("[finder] connected {0}" -f $name)
+
+                # Opening the port may still reset the board once.  Give the
+                # firmware time to boot before the caller sends a command.
+                Start-Sleep -Milliseconds 1500
                 return $sp
             } catch {
                 if ($sp) {
