@@ -1182,6 +1182,15 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         }
     }
 
+    /* Wi-Fi channel centres (2412..2472, 5 MHz apart) as small ticks just
+     * below the chart, so a 5-6 MHz group can be compared to a channel. */
+    for (int wch = 1; wch <= 13; wch++) {
+        int mhz = 2412 + (wch - 1) * 5;
+        int idx = mhz - 2400;
+        if (idx < scroll || idx >= scroll + PRO_VIS) continue;
+        rect(x0 + (idx - scroll) * 2, 101, 1, 3, COL_DIM);
+    }
+
     /* 20 MHz ticks inside the visible window. */
     for (int mhz = 2400; mhz <= 2500; mhz += 20) {
         int ch = mhz - 2400;
