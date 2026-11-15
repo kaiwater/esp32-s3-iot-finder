@@ -1111,12 +1111,17 @@ void app_main(void)
     memset(&s_ui, 0, sizeof(s_ui));
     s_ui.ssid_enc = SSID_ENC_UNKNOWN;
 
-    /* Boot straight into RF SCAN with Wi-Fi paused, so the NRF sees the
-     * environment without the ESP32 radio desensing it. */
+    /* Boot straight into RF SCAN PRO with Wi-Fi paused, so the NRF sees
+     * the environment without the ESP32 radio desensing it.  The default
+     * view is the fading ACTIVITY spectrum. */
     nrf_aux_start();
     finder_wifi_pause();
-    nrf_aux_scan(true);
-    s_ui.page = UI_PAGE_RF_SCAN;
+    nrf_aux_pro(true);
+    s_ui.pro_view = 0;
+    s_ui.pro_scroll = 0;
+    s_pro_printed = 0;
+    s_ui.page = UI_PAGE_RF_PRO;
+    ESP_LOGI("pro", "boot: 2400..2525MHz step 1MHz, S=sweep");
 
     /* Saved interval and template live in NVS, so changing them does not
      * need a rebuild.  Default is 1 Hz. */

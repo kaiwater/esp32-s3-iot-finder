@@ -427,11 +427,13 @@ ui pro           直接跳到该页面
 
 ### RF SCAN 页
 
-**开机默认进入 RF SCAN**（不再先停在 FINDER）：
+**开机默认进入 RF SCAN PRO**（不再先停在 FINDER 或 13 信道 RF SCAN）：
 
-- 开机时直接暂停 ESP32 Wi-Fi，只让 NRF 扫描，避免 ESP32 自己的射频/本振抬高 NRF 读数
-- 扫描期间目标跟踪、AP/STA 列表暂停；Wi-Fi 在退出 RF SCAN 后自动恢复
-- 短按 `*` 离开 RF SCAN 到菜单，Wi-Fi 随即恢复；继续按 `*` 回到 FINDER
+- 开机时直接暂停 ESP32 Wi-Fi，启动 2400–2525MHz 逐 1MHz 扫描
+- 默认显示 **ACTIVITY**（活跃度衰减）视图，K1/K2 可左右滚动
+- 扫描期间目标跟踪、AP/STA 列表暂停；Wi-Fi 在退出后自动恢复
+- 短按 `*` 离开到菜单，Wi-Fi 随即恢复；继续按 `*` 回到 FINDER
+- 想切回 13 信道 RF SCAN：菜单选 `RF SCAN`，或串口 `ui rf`
 - 想直接进 FINDER：`*` 菜单 → `*` 返回，或串口 `ui find`
 
 - 短按 `#`：查看图表说明（每根柱/峰值/平均值/AGE/HIT 的含义）
