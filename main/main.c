@@ -172,7 +172,6 @@ static void menu_execute(void)
         finder_wifi_pause();
         nrf_aux_pro(true);
         s_pro_printed = 0;
-        s_ui.pro_scroll = 0;
         s_ui.pro_view = 0;
         s_ui.page = UI_PAGE_RF_PRO;
         ESP_LOGI("pro", "start: 2400..2525MHz step 1MHz, S=sweep");
@@ -216,14 +215,7 @@ static void handle_event(int b)
     }
 
     if (s_ui.page == UI_PAGE_RF_PRO) {
-        if (b == 1) {
-            s_ui.pro_scroll -= 38;
-            if (s_ui.pro_scroll < 0) s_ui.pro_scroll = 0;
-        } else if (b == 2) {
-            s_ui.pro_scroll += 38;
-            int max = NRF_PRO_CHANNELS - 76;
-            if (s_ui.pro_scroll > max) s_ui.pro_scroll = max;
-        } else if (b == 3) {
+        if (b == 3) {
             s_ui.pro_view = (s_ui.pro_view + 1) % 3;
             ESP_LOGI("pro", "view %s",
                      s_ui.pro_view == 0 ? "ACTIVITY" :
@@ -850,7 +842,6 @@ static void handle_line(char *line)
             finder_wifi_pause();
             nrf_aux_pro(true);
             s_pro_printed = 0;
-            s_ui.pro_scroll = 0;
             s_ui.pro_view = 0;
             s_ui.page = UI_PAGE_RF_PRO;
             ESP_LOGI("pro", "start: 2400..2525MHz step 1MHz, S=sweep");
@@ -943,7 +934,6 @@ static void handle_line(char *line)
         finder_wifi_pause();
         nrf_aux_pro(true);
         s_pro_printed = 0;
-        s_ui.pro_scroll = 0;
         s_ui.pro_view = 0;
         s_ui.page = UI_PAGE_RF_PRO;
         ESP_LOGI("pro", "start: 2400..2525MHz step 1MHz, S=sweep");
@@ -1118,7 +1108,6 @@ void app_main(void)
     finder_wifi_pause();
     nrf_aux_pro(true);
     s_ui.pro_view = 0;
-    s_ui.pro_scroll = 0;
     s_pro_printed = 0;
     s_ui.page = UI_PAGE_RF_PRO;
     ESP_LOGI("pro", "boot: 2400..2525MHz step 1MHz, S=sweep");

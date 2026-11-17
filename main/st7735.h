@@ -45,7 +45,6 @@ typedef struct {
     ui_page_t page;
     ui_page_t help_back;
     int menu_sel;
-    int pro_scroll;
     int pro_view;
     ssid_enc_t ssid_enc;
 
