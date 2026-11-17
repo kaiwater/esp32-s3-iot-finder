@@ -79,9 +79,17 @@ IDF_EXPORT=$HOME/esp/esp-idf/export.sh ./tools/idf.sh build
 idf.py build
 ```
 
-从 5.4 切到 6.x 时建议先备份或删除项目根目录的 `sdkconfig`，让它按
-`sdkconfig.defaults` 重新生成。`components/esp_lcd_st7735` 和
-`main/CMakeLists.txt` 已经包含 v6 兼容改动，不需要手动修改。
+从 5.4 切到 6.x 时建议**完全重新生成配置**：
+
+```sh
+rm -f sdkconfig sdkconfig.old
+rm -rf build
+./tools/idf.sh -B build -DIDF_TARGET=esp32s3 build
+```
+
+`sdkconfig` 不进仓库，`sdkconfig.defaults` 才是版本化的配置来源。
+`components/esp_lcd_st7735` 和 `main/CMakeLists.txt` 已经包含 v6 兼容改动，
+不需要手动修改。
 
 - 目标 flash：16MB，DIO，80MHz
 - 自定义分区：`partitions.csv`，factory app **2MB**
