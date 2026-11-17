@@ -59,7 +59,11 @@
 
 ## 构建
 
-需要 ESP-IDF **v5.4.2**（或兼容的 5.x）。
+需要 ESP-IDF **v5.4.2** 或 **v6.1.x**（两者都已实测：编译 + 运行）。
+
+从 5.4 切到 6.x 时建议先备份或删除项目根目录的 `sdkconfig`，让它按
+`sdkconfig.defaults` 重新生成；`components/esp_lcd_st7735` 和 `main/CMakeLists.txt`
+已经包含 v6 兼容改动，不需要手动改。
 
 ```sh
 . $HOME/esp/esp-idf/export.sh

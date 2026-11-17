@@ -7,6 +7,7 @@ idf_component_register(
         esp_driver_spi
         esp_driver_gpio
         esp_driver_uart
+        esp_driver_usb_serial_jtag
         esp_timer
         esp_wifi
         nvs_flash
