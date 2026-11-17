@@ -59,18 +59,29 @@
 
 ## 构建
 
-需要 ESP-IDF **v5.4.2** 或 **v6.1.x**（两者都已实测：编译 + 运行）。
-
-从 5.4 切到 6.x 时建议先备份或删除项目根目录的 `sdkconfig`，让它按
-`sdkconfig.defaults` 重新生成；`components/esp_lcd_st7735` 和 `main/CMakeLists.txt`
-已经包含 v6 兼容改动，不需要手动改。
+**默认工具链：ESP-IDF v6.1.x**（已实测编译 + 运行）。旧的 v5.4.2 仍然兼容，
+代码不需要改；v5.4 时代的旧版本留档在 `archive/idf-5.4` 分支。
 
 ```sh
-. $HOME/esp/esp-idf/export.sh
-idf.py set-target esp32s3
-idf.py build
-idf.py -p /dev/cu.usbserial-XXXX flash
+# 默认走 ~/esp/esp-idf-6.1.1
+./tools/idf.sh set-target esp32s3
+./tools/idf.sh build
+./tools/idf.sh -p /dev/cu.usbserial-XXXX flash
+
+# 想用别的 IDF：
+IDF_EXPORT=$HOME/esp/esp-idf/export.sh ./tools/idf.sh build
 ```
+
+也可以手动 source：
+
+```sh
+. $HOME/esp/esp-idf-6.1.1/export.sh
+idf.py build
+```
+
+从 5.4 切到 6.x 时建议先备份或删除项目根目录的 `sdkconfig`，让它按
+`sdkconfig.defaults` 重新生成。`components/esp_lcd_st7735` 和
+`main/CMakeLists.txt` 已经包含 v6 兼容改动，不需要手动修改。
 
 - 目标 flash：16MB，DIO，80MHz
 - 自定义分区：`partitions.csv`，factory app **2MB**
