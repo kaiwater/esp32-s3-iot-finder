@@ -1118,6 +1118,18 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     snprintf(buf, sizeof(buf), "S=%lu", (unsigned long)cyc);
     text3x5(2, 14, buf, 1, COL_DIM);
 
+    /* Which NRF modules are online (RF Scan Pro sweeps with radio 1). */
+    if (nrf_aux_ok()) {
+        if (nrf_aux_ok2() && nrf_aux_csn2() >= 0)
+            snprintf(buf, sizeof(buf), "C%d+C%d",
+                     nrf_aux_csn(), nrf_aux_csn2());
+        else
+            snprintf(buf, sizeof(buf), "C%d", nrf_aux_csn());
+        text3x5_right(158, 14, buf, 1, COL_ACCENT);
+    } else {
+        text3x5_right(158, 14, "NRF --", 1, COL_DIM);
+    }
+
     const int top = 24, bottom = 100, x0 = 2;
 
     /* Strongest channel in the window (not used by the waterfall). */
