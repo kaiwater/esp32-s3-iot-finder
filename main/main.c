@@ -362,6 +362,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  lock                  toggle channel lock");
     ESP_LOGI("cli", "  chan                  manual next channel");
     ESP_LOGI("cli", "  chprev                manual previous channel");
+    ESP_LOGI("cli", "  chset N               lock the Wi-Fi sniffer to channel N");
     ESP_LOGI("cli", "  peak                  clear peak");
     ESP_LOGI("cli", "  list                  print recent candidates with AP/SSID");
     ESP_LOGI("cli", "  stas                  group candidates by AP (BSSID/SSID)");
@@ -374,6 +375,8 @@ static void print_help(void)
     ESP_LOGI("cli", "  ui ap|detail|stas|rf|help|color|find  jump to a UI page (debug)");
     ESP_LOGI("cli", "  rfdata                dump NRF scan peak/avg/age/hits");
     ESP_LOGI("cli", "  wifioff / wifion      pause/resume ESP32 Wi-Fi (RF scan test)");
+    ESP_LOGI("cli", "  wifi / wifitoggle     flip Wi-Fi for an A/B desense check");
+    ESP_LOGI("cli", "  mwdata                print the 2450 MHz mode stats");
     ESP_LOGI("cli", "  mw                    fixed 2450 MHz observation (NRF CH50)");
     ESP_LOGI("cli", "  mw off | mw reset     back to 13 channels / clear MW stats");
     ESP_LOGI("cli", "  pro                   RF Scan Pro: 126 x 1MHz sweep + PC list");
@@ -774,6 +777,14 @@ static void handle_line(char *line)
         finder_next_channel();
     } else if (!strcmp(line, "chprev")) {
         finder_prev_channel();
+    } else if (!strncmp(line, "chset ", 6)) {
+        int ch = atoi(line + 6);
+        if (ch >= 1 && ch <= 13) {
+            finder_set_manual_channel((uint8_t)ch);
+            ESP_LOGI("cli", "manual ch %d", ch);
+        } else {
+            ESP_LOGW("cli", "usage: chset 1..13");
+        }
     } else if (!strcmp(line, "peak")) {
         finder_clear_peak();
     } else if (!strcmp(line, "list") || !strcmp(line, "cand")) {
@@ -912,6 +923,7 @@ static void handle_line(char *line)
                  st7735_theme(), s_view.wifi_ok);
     } else if (!strcmp(line, "mw")) {
         nrf_aux_scan(false);
+        nrf_aux_pro(false);
         finder_wifi_pause();
         nrf_aux_mw(true);
         s_ui.page = UI_PAGE_MW;
@@ -953,8 +965,29 @@ static void handle_line(char *line)
         pro_print_list();
     } else if (!strcmp(line, "wifioff")) {
         finder_wifi_pause();
+        ESP_LOGI("cli", "wifi off");
     } else if (!strcmp(line, "wifion")) {
         finder_wifi_resume();
+        ESP_LOGI("cli", "wifi on");
+    } else if (!strcmp(line, "wifi") || !strcmp(line, "wifitoggle")) {
+        /* One-key A/B: flip the ESP32 radio without touching the NRF mode. */
+        bool on = !s_view.wifi_ok;
+        bool ok = on ? finder_wifi_resume() : finder_wifi_pause();
+        ESP_LOGI("cli", "wifi %s%s", on ? "on" : "off",
+                 ok ? "" : " (failed)");
+    } else if (!strcmp(line, "mwdata")) {
+        nrf_mw_t mw;
+        nrf_aux_mw_get(&mw);
+        uint32_t win = nrf_aux_mw_elapsed_ms() / 1000;
+        if (win > 10) win = 10;
+        uint32_t tenths = win ? (uint32_t)mw.hits_10s * 10u / win : 0;
+        ESP_LOGI("cli",
+                 "mw active=%d peak=%u avg=%u hit=%lu/%lu h10=%u rate=%lu.%lu/s win=%lus age=%lus",
+                 nrf_aux_mw_active(), mw.peak, mw.avg,
+                 (unsigned long)mw.hits, (unsigned long)mw.sweeps,
+                 mw.hits_10s, (unsigned long)(tenths / 10),
+                 (unsigned long)(tenths % 10), (unsigned long)win,
+                 (unsigned long)(mw.peak_age_ms / 1000));
     } else if (!strcmp(line, "theme")) {
         int t = st7735_next_theme();
         ESP_LOGI("cli", "theme %d %s", t + 1, st7735_theme_name());

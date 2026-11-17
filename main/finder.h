@@ -119,6 +119,7 @@ void finder_prev_candidate(void);
 void finder_start_learn(void);
 void finder_toggle_lock(void);
 void finder_next_channel(void);
+void finder_set_manual_channel(uint8_t ch);
 void finder_prev_channel(void);
 void finder_clear_peak(void);
 

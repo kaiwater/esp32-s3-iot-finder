@@ -839,6 +839,18 @@ static void step_channel(int dir)
     finder_toast("MANUAL CH %u", s_manual_ch);
 }
 
+void finder_set_manual_channel(uint8_t ch)
+{
+    if (ch < CH_MIN || ch > CH_MAX) return;
+    xSemaphoreTake(s_api_lock, portMAX_DELAY);
+    s_manual_ch = ch;
+    s_target_ch = ch;
+    s_mode = FINDER_CH_MANUAL;
+    set_channel(ch);
+    xSemaphoreGive(s_api_lock);
+    finder_toast("MANUAL CH %u", ch);
+}
+
 void finder_next_channel(void)
 {
     step_channel(1);
