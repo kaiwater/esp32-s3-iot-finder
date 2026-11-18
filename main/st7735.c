@@ -1155,6 +1155,11 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         text3x5_right(158, 14, "NRF --", 1, COL_DIM);
     }
 
+    /* Smoothed water levels: rise fast, fall slowly, so a bin rolling out
+     * of the 10 s window does not make the bar vanish in one frame. */
+    static uint8_t s_wifi_lvl[14];
+    static uint8_t s_wifi_dpct[14];
+
     /* Per-channel 802.11 data + management rates, normalised by dwell. */
     finder_ch_act_t wifi_act[14];
     uint32_t wifi_win = 10;
@@ -1261,17 +1266,40 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         uint32_t d10 = wifi_data10[n];
         uint32_t m10 = wifi_mgmt10[n];
         uint32_t t10 = d10 + m10;
+        int target = 0;
+        int target_dp = s_wifi_dpct[n];
         if (t10) {
             uint32_t full = s_pro_full ? s_pro_full : 120;
             uint32_t v = t10 * 1000u / full; /* 0.1 fps -> 0..10000 */
             if (v > 10000) v = 10000;
-            int lvl = (int)isqrt100(v);
+            target = (int)isqrt100(v);
+            target_dp = (int)(d10 * 100u / t10);
+        }
+        int cur = s_wifi_lvl[n];
+        if (target > cur) {
+            cur += (target - cur + 1) / 2;        /* fast rise */
+        } else if (target < cur) {
+            int d = (cur - target + 9) / 10;      /* slow fade */
+            if (d < 1) d = 1;
+            cur -= d;
+        }
+        s_wifi_lvl[n] = (uint8_t)cur;
+        int dp = s_wifi_dpct[n];
+        if (target_dp > dp) dp += (target_dp - dp + 1) / 2;
+        else if (target_dp < dp) {
+            int d = (dp - target_dp + 3) / 4;
+            if (d < 1) d = 1;
+            dp -= d;
+        }
+        s_wifi_dpct[n] = (uint8_t)dp;
+
+        if (cur > 0) {
             /* Wi-Fi water hangs DOWN from the top (zero at the top), so it
              * does not fight the NRF bars that grow up from the bottom. */
             int y0 = top + 7;            /* below the channel number */
-            int hgt = (bottom - 2 - y0) * lvl / 100;
+            int hgt = (bottom - 2 - y0) * cur / 100;
             if (hgt > 0) {
-                int hd = (int)((uint32_t)hgt * d10 / t10);
+                int hd = hgt * dp / 100;
                 for (int yy = y0; yy < y0 + hd; yy++)
                     rect(bx + 2, yy, 1, 1, s_pro_water);
                 for (int yy = y0 + hd; yy < y0 + hgt; yy++)
