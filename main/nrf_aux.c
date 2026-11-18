@@ -289,20 +289,33 @@ static void nrf_aux_task(void *arg)
         }
 
         if (s_pro) {
-            for (int rf = 0; rf < NRF_PRO_CHANNELS && s_pro; rf++) {
+            /* Two radios halve the pass: radio 1 does 0..62, radio 2 does
+             * 63..125, sampled in the same 8 ms window. */
+            bool dual = s_ok2;
+            int limit = dual ? NRF_PRO_CHANNELS / 2 : NRF_PRO_CHANNELS;
+            for (int rf = 0; rf < limit && s_pro; rf++) {
+                int rf2 = dual ? rf + NRF_PRO_CHANNELS / 2 : -1;
                 nrf_set_channel(&s_radio, (uint8_t)rf);
-                /* pdMS_TO_TICKS() is 0 at 100 Hz, so use busy waits for the
-                 * synthesiser/RX settle and yield once per 16 channels. */
+                if (rf2 >= 0) nrf_set_channel(&s_radio2, (uint8_t)rf2);
                 esp_rom_delay_us(3000);
                 nrf_rx_mode(&s_radio);
+                if (rf2 >= 0) nrf_rx_mode(&s_radio2);
                 esp_rom_delay_us(500);
-                unsigned high = 0;
+                if (rf2 >= 0 && nrf_read_reg(&s_radio2, REG_RF_CH) != rf2) {
+                    s_ok2 = false;
+                    break; /* next pass falls back to one radio */
+                }
+                unsigned h1 = 0, h2 = 0;
                 for (int i = 0; i < 16; i++) {
-                    if (nrf_read_reg(&s_radio, REG_RPD) & 1u) high++;
+                    if (nrf_read_reg(&s_radio, REG_RPD) & 1u) h1++;
+                    if (rf2 >= 0 && (nrf_read_reg(&s_radio2, REG_RPD) & 1u)) h2++;
                     esp_rom_delay_us(500);
                 }
                 nrf_standby(&s_radio);
-                pro_store(rf, (uint8_t)(high * 100u / 16u));
+                if (rf2 >= 0) nrf_standby(&s_radio2);
+                pro_store(rf, (uint8_t)(h1 * 100u / 16u));
+                if (rf2 >= 0)
+                    pro_store(rf2, (uint8_t)(h2 * 100u / 16u));
                 if ((rf & 15) == 15) vTaskDelay(1);
             }
             if (s_pro) s_pro_cycles++;

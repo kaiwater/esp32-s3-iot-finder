@@ -1124,7 +1124,7 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     snprintf(buf, sizeof(buf), "S=%lu", (unsigned long)cyc);
     text3x5(2, 14, buf, 1, COL_DIM);
 
-    /* Which NRF modules are online (RF Scan Pro sweeps with radio 1). */
+    /* Which NRF modules are online (RF Scan Pro uses both when present). */
     if (nrf_aux_ok()) {
         if (nrf_aux_ok2() && nrf_aux_csn2() >= 0)
             snprintf(buf, sizeof(buf), "C%d+C%d",
@@ -1183,22 +1183,6 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     } else {
         rect(x0, top, PRO_PIXELS, bottom - top, COL_RF_BG);
 
-        /* 802.11 background: every Wi-Fi channel covers +/-10 MHz; keep the
-         * strongest covering channel for each 1 MHz pixel. */
-        for (int i = 0; i < PRO_PIXELS; i++) {
-            int mhz = 2400 + i * NRF_PRO_CHANNELS / PRO_PIXELS;
-            uint32_t best = 0;
-            for (int n = 1; n <= 13; n++) {
-                int c = 2412 + (n - 1) * 5;
-                int d = mhz - c;
-                if (d < 0) d = -d;
-                if (d <= 10 && wifi_rate[n] > best) best = wifi_rate[n];
-            }
-            if (!best) continue;
-            int h = 2 + (best > 26 ? 26 : (int)best);
-            rect(x0 + i, bottom - h, 1, h, wifi_rate_color(best));
-        }
-
         /* Frequency label first: the bars paint over it when they grow, so
          * a fresh sweep visually wipes the old callout. */
         if (best >= 0 && best_val) {
@@ -1229,13 +1213,33 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         }
     }
 
-    /* Wi-Fi channel centres (2412..2472, 5 MHz apart) as small ticks just
-     * below the chart, so a 5-6 MHz group can be compared to a channel. */
-    for (int wch = 1; wch <= 13; wch++) {
-        int mhz = 2412 + (wch - 1) * 5;
-        int x = x0 + (mhz - 2400) * PRO_PIXELS / NRF_PRO_CHANNELS;
-        rect(x, 101, 1, 3,
-             wifi_rate[wch] ? wifi_rate_color(wifi_rate[wch]) : COL_DIM);
+    /* 13 Wi-Fi channel frames on top: number at the top, hollow frame,
+     * water level = 802.11 data rate.  The NRF bars stay visible inside. */
+    for (int n = 1; n <= 13; n++) {
+        int c = 2412 + (n - 1) * 5;
+        int xc = x0 + (c - 2400) * PRO_PIXELS / NRF_PRO_CHANNELS;
+        int bx = xc - 3;
+        if (bx < x0) bx = x0;
+
+        rect(bx, top, 6, 1, COL_DIM);           /* top */
+        rect(bx, bottom - 1, 6, 1, COL_DIM);    /* bottom */
+        rect(bx, top, 1, bottom - top, COL_DIM);/* left */
+        rect(bx + 5, top, 1, bottom - top, COL_DIM); /* right */
+
+        char num[4];
+        snprintf(num, sizeof(num), "%d", n);
+        text2x5(xc - (int)strlen(num) * 3 / 2, top + 1, num, 1, COL_TEXT);
+
+        uint32_t rate = wifi_rate[n];
+        uint32_t lvl = rate * 6;
+        if (lvl > 100) lvl = 100;
+        if (lvl) {
+            int wy = (bottom - 2) - (bottom - 2 - (top + 7)) * (int)lvl / 100;
+            uint16_t col = wifi_rate_color(rate);
+            rect(bx + 1, wy, 4, 1, col);
+            for (int yy = wy + 2; yy < bottom - 1; yy += 2)
+                rect(bx + 2, yy, 1, 1, col);
+        }
     }
 
     /* 20 MHz ticks inside the visible window. */
