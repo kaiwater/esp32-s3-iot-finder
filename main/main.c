@@ -155,21 +155,21 @@ static void menu_execute(void)
     case UI_MENU_RFSCAN:
         nrf_aux_mw(false);
         nrf_aux_pro(false);
-        finder_wifi_pause();
+        finder_wifi_resume();
         nrf_aux_scan(true);
         s_ui.page = UI_PAGE_RF_SCAN;
         break;
     case UI_MENU_MW:
         nrf_aux_scan(false);
         nrf_aux_pro(false);
-        finder_wifi_pause();
+        finder_wifi_resume();
         nrf_aux_mw(true);
         s_ui.page = UI_PAGE_MW;
         break;
     case UI_MENU_RFPRO:
         nrf_aux_scan(false);
         nrf_aux_mw(false);
-        finder_wifi_pause();
+        finder_wifi_resume();
         nrf_aux_pro(true);
         s_pro_printed = 0;
         s_ui.pro_view = 0;
@@ -377,6 +377,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  wifioff / wifion      pause/resume ESP32 Wi-Fi (RF scan test)");
     ESP_LOGI("cli", "  wifi / wifitoggle     flip Wi-Fi for an A/B desense check");
     ESP_LOGI("cli", "  mwdata                print the 2450 MHz mode stats");
+    ESP_LOGI("cli", "  wifidata              per-channel 802.11 data frames/s");
     ESP_LOGI("cli", "  mw                    fixed 2450 MHz observation (NRF CH50)");
     ESP_LOGI("cli", "  mw off | mw reset     back to 13 channels / clear MW stats");
     ESP_LOGI("cli", "  pro                   RF Scan Pro: 126 x 1MHz sweep + PC list");
@@ -838,19 +839,19 @@ static void handle_line(char *line)
         } else if (!strcmp(arg, "rf")) {
             nrf_aux_mw(false);
             nrf_aux_pro(false);
-            finder_wifi_pause();
+            finder_wifi_resume();
             nrf_aux_scan(true);
             s_ui.page = UI_PAGE_RF_SCAN;
         } else if (!strcmp(arg, "mw")) {
             nrf_aux_scan(false);
             nrf_aux_pro(false);
-            finder_wifi_pause();
+            finder_wifi_resume();
             nrf_aux_mw(true);
             s_ui.page = UI_PAGE_MW;
         } else if (!strcmp(arg, "pro")) {
             nrf_aux_scan(false);
             nrf_aux_mw(false);
-            finder_wifi_pause();
+            finder_wifi_resume();
             nrf_aux_pro(true);
             s_pro_printed = 0;
             s_ui.pro_view = 0;
@@ -859,7 +860,7 @@ static void handle_line(char *line)
         } else if (!strcmp(arg, "help")) {
             nrf_aux_mw(false);
             nrf_aux_pro(false);
-            finder_wifi_pause();
+            finder_wifi_resume();
             nrf_aux_scan(true);
             s_ui.help_back = UI_PAGE_RF_SCAN;
             s_ui.page = UI_PAGE_RF_HELP;
@@ -924,7 +925,7 @@ static void handle_line(char *line)
     } else if (!strcmp(line, "mw")) {
         nrf_aux_scan(false);
         nrf_aux_pro(false);
-        finder_wifi_pause();
+        finder_wifi_resume();
         nrf_aux_mw(true);
         s_ui.page = UI_PAGE_MW;
         ESP_LOGI("cli", "MW 2450 on (NRF RF_CH=50)");
@@ -943,7 +944,7 @@ static void handle_line(char *line)
     } else if (!strcmp(line, "pro")) {
         nrf_aux_scan(false);
         nrf_aux_mw(false);
-        finder_wifi_pause();
+        finder_wifi_resume();
         nrf_aux_pro(true);
         s_pro_printed = 0;
         s_ui.pro_view = 0;
@@ -975,6 +976,17 @@ static void handle_line(char *line)
         bool ok = on ? finder_wifi_resume() : finder_wifi_pause();
         ESP_LOGI("cli", "wifi %s%s", on ? "on" : "off",
                  ok ? "" : " (failed)");
+    } else if (!strcmp(line, "wifidata")) {
+        uint16_t cnt[14];
+        uint32_t win = 10;
+        finder_channel_activity(cnt, &win);
+        if (!win) win = 1;
+        char out[140];
+        int o = snprintf(out, sizeof(out), "wifi fps win=%lus:", (unsigned long)win);
+        for (int n = 1; n <= 13 && o < (int)sizeof(out) - 8; n++)
+            o += snprintf(out + o, sizeof(out) - o, " %u",
+                          (unsigned)(cnt[n] / win));
+        ESP_LOGI("cli", "%s", out);
     } else if (!strcmp(line, "mwdata")) {
         nrf_mw_t mw;
         nrf_aux_mw_get(&mw);
@@ -1134,11 +1146,11 @@ void app_main(void)
     memset(&s_ui, 0, sizeof(s_ui));
     s_ui.ssid_enc = SSID_ENC_UNKNOWN;
 
-    /* Boot straight into RF SCAN PRO with Wi-Fi paused, so the NRF sees
-     * the environment without the ESP32 radio desensing it.  The default
-     * view is the fading ACTIVITY spectrum. */
+    /* Boot straight into RF SCAN PRO.  Wi-Fi stays on: per-channel
+     * 802.11 activity is the background, and the measured self-desense is
+     * within noise.  The default view is the fading ACTIVITY spectrum. */
     nrf_aux_start();
-    finder_wifi_pause();
+    finder_wifi_resume();
     nrf_aux_pro(true);
     s_ui.pro_view = 0;
     s_pro_printed = 0;

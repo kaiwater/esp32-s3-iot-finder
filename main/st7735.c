@@ -1087,6 +1087,15 @@ static uint16_t strength_color(uint8_t v)
     return COL_DIM;
 }
 
+/* Cool ramp for the 802.11 background: brighter = more data frames/s. */
+static uint16_t wifi_rate_color(uint32_t rate)
+{
+    if (rate >= 30) return RGB565(170, 235, 255);
+    if (rate >= 10) return RGB565(60, 170, 255);
+    if (rate >= 3)  return RGB565(20, 90, 220);
+    return RGB565(0, 40, 120);
+}
+
 static void draw_rf_pro_page(const ui_state_t *ui)
 {
     static nrf_pro_ch_t d[NRF_PRO_CHANNELS];
@@ -1127,6 +1136,21 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         text3x5_right(158, 14, "NRF --", 1, COL_DIM);
     }
 
+    /* Per-channel 802.11 data-frame activity (10 s rolling). */
+    uint16_t wifi_cnt[14];
+    uint32_t wifi_win = 10;
+    finder_channel_activity(wifi_cnt, &wifi_win);
+    if (!wifi_win) wifi_win = 1;
+    uint32_t wifi_rate[14] = {0};
+    uint32_t wifi_total = 0;
+    for (int n = 1; n <= 13; n++) {
+        wifi_rate[n] = wifi_cnt[n] / wifi_win;
+        wifi_total += wifi_rate[n];
+        if (wifi_total > 999) wifi_total = 999;
+    }
+    snprintf(buf, sizeof(buf), "WIFI %lu/s", (unsigned long)wifi_total);
+    text3x5(2, 18, buf, 1, wifi_total ? wifi_rate_color(wifi_total) : COL_DIM);
+
     const int top = 24, bottom = 100, x0 = 2;
 
     /* Strongest channel over the whole 126 MHz span. */
@@ -1158,6 +1182,22 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         }
     } else {
         rect(x0, top, PRO_PIXELS, bottom - top, COL_RF_BG);
+
+        /* 802.11 background: every Wi-Fi channel covers +/-10 MHz; keep the
+         * strongest covering channel for each 1 MHz pixel. */
+        for (int i = 0; i < PRO_PIXELS; i++) {
+            int mhz = 2400 + i * NRF_PRO_CHANNELS / PRO_PIXELS;
+            uint32_t best = 0;
+            for (int n = 1; n <= 13; n++) {
+                int c = 2412 + (n - 1) * 5;
+                int d = mhz - c;
+                if (d < 0) d = -d;
+                if (d <= 10 && wifi_rate[n] > best) best = wifi_rate[n];
+            }
+            if (!best) continue;
+            int h = 2 + (best > 26 ? 26 : (int)best);
+            rect(x0 + i, bottom - h, 1, h, wifi_rate_color(best));
+        }
 
         /* Frequency label first: the bars paint over it when they grow, so
          * a fresh sweep visually wipes the old callout. */
@@ -1194,7 +1234,8 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     for (int wch = 1; wch <= 13; wch++) {
         int mhz = 2412 + (wch - 1) * 5;
         int x = x0 + (mhz - 2400) * PRO_PIXELS / NRF_PRO_CHANNELS;
-        rect(x, 101, 1, 3, COL_DIM);
+        rect(x, 101, 1, 3,
+             wifi_rate[wch] ? wifi_rate_color(wifi_rate[wch]) : COL_DIM);
     }
 
     /* 20 MHz ticks inside the visible window. */

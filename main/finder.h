@@ -107,6 +107,7 @@ typedef struct {
 
 bool finder_init(void);
 void finder_poll(finder_view_t *v);
+void finder_channel_activity(uint16_t out[14], uint32_t *window_s);
 bool finder_wifi_pause(void);
 bool finder_wifi_resume(void);
 

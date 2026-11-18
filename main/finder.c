@@ -94,6 +94,12 @@ static int8_t s_rssi_hist[5];
 static volatile uint8_t s_rssi_n;
 static volatile uint8_t s_rssi_i;
 
+/* Per-channel 802.11 data-frame counts, 10 one-second bins. */
+static uint16_t s_ch_data[14][10];
+static uint8_t s_ch_bin;
+static uint32_t s_ch_bin_last_s;
+static uint32_t s_ch_start_s;
+
 static int8_t s_peak = -128;
 static char s_ssid_hint[FINDER_SSID_MAX];
 static uint8_t s_ssid_hint_len;
@@ -567,6 +573,29 @@ static bool cand_probe_ssid(const uint8_t *mac, char *out, size_t n,
     return found;
 }
 
+static void ch_bins_advance(uint32_t now_s)
+{
+    if (s_ch_bin_last_s == 0) {
+        s_ch_bin_last_s = now_s;
+        if (!s_ch_start_s) s_ch_start_s = now_s;
+        return;
+    }
+    if (now_s == s_ch_bin_last_s) return;
+
+    uint32_t delta = now_s - s_ch_bin_last_s;
+    if (delta >= 10) {
+        memset(s_ch_data, 0, sizeof(s_ch_data));
+        s_ch_bin = 0;
+        s_ch_bin_last_s = now_s;
+        return;
+    }
+    while (s_ch_bin_last_s < now_s) {
+        s_ch_bin = (uint8_t)((s_ch_bin + 1) % 10);
+        for (int i = 0; i < 14; i++) s_ch_data[i][s_ch_bin] = 0;
+        s_ch_bin_last_s++;
+    }
+}
+
 static void drain_events(void)
 {
     if (!s_evt_q) return;
@@ -575,6 +604,13 @@ static void drain_events(void)
     snif_evt_t ev;
     while (xQueueReceive(s_evt_q, &ev, 0) == pdTRUE) {
         s_packets++;
+        if (ev.type == 2 && ev.ch >= 1 && ev.ch <= 13) {
+            portENTER_CRITICAL(&s_stats_mux);
+            ch_bins_advance((uint32_t)(ev.ms / 1000));
+            if (s_ch_data[ev.ch][s_ch_bin] < 0xFFFF)
+                s_ch_data[ev.ch][s_ch_bin]++;
+            portEXIT_CRITICAL(&s_stats_mux);
+        }
         bool learn = s_learn_until != 0 && ev.ms < s_learn_until;
 
         if (ev.type == 0) {
@@ -1466,6 +1502,10 @@ void finder_poll(finder_view_t *v)
     if (!v) return;
     uint32_t now = now_ms();
 
+    portENTER_CRITICAL(&s_stats_mux);
+    ch_bins_advance(now / 1000);
+    portEXIT_CRITICAL(&s_stats_mux);
+
     drain_events();
 
     v->wifi_ok = s_wifi_ok;
@@ -1688,4 +1728,26 @@ void finder_poll(finder_view_t *v)
         v->toast_until = 0;
     }
     portEXIT_CRITICAL(&s_toast_mux);
+}
+
+void finder_channel_activity(uint16_t out[14], uint32_t *window_s)
+{
+    if (!out) return;
+    uint32_t now = now_ms() / 1000;
+
+    portENTER_CRITICAL(&s_stats_mux);
+    ch_bins_advance(now);
+    memset(out, 0, 14 * sizeof(uint16_t));
+    for (int ch = 1; ch <= 13; ch++) {
+        uint32_t sum = 0;
+        for (int i = 0; i < 10; i++) sum += s_ch_data[ch][i];
+        out[ch] = sum > 0xFFFF ? 0xFFFF : (uint16_t)sum;
+    }
+    portEXIT_CRITICAL(&s_stats_mux);
+
+    if (window_s) {
+        uint32_t win = s_ch_start_s ? now - s_ch_start_s : 0;
+        if (win > 10) win = 10;
+        *window_s = win ? win : 1;
+    }
 }
