@@ -68,6 +68,7 @@ static uint16_t col_rf_bg, col_rf_avg, col_rf_peak, col_rf_hot;
 static uint16_t s_pro_frame;
 static uint16_t s_pro_num;
 static uint16_t s_pro_water;
+static uint16_t s_pro_mgmt;
 static uint16_t s_pro_full;
 
 #define COL_BG     col_bg
@@ -1097,9 +1098,9 @@ static uint16_t strength_color(uint8_t v)
 /* Cool ramp for the 802.11 water: rate is in 0.1 frames/s. */
 static uint16_t wifi_rate_color(uint32_t rate10)
 {
-    if (rate10 >= 300) return s_pro_water;
-    if (rate10 >= 100) return scale565(s_pro_water, 3, 4);
-    if (rate10 >= 30)  return scale565(s_pro_water, 2, 4);
+    if (rate10 >= 1000) return s_pro_water;
+    if (rate10 >= 500) return scale565(s_pro_water, 3, 4);
+    if (rate10 >= 200) return scale565(s_pro_water, 2, 4);
     return scale565(s_pro_water, 1, 4);
 }
 
@@ -1154,16 +1155,22 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         text3x5_right(158, 14, "NRF --", 1, COL_DIM);
     }
 
-    /* Per-channel 802.11 data-frame activity (10 s rolling). */
-    uint16_t wifi_cnt[14];
+    /* Per-channel 802.11 data + management rates, normalised by dwell. */
+    finder_ch_act_t wifi_act[14];
     uint32_t wifi_win = 10;
-    finder_channel_activity(wifi_cnt, &wifi_win);
-    if (!wifi_win) wifi_win = 1;
-    uint32_t wifi_rate[14] = {0}; /* 0.1 frames/s */
+    finder_channel_activity(wifi_act, &wifi_win);
+    (void)wifi_win;
+    uint32_t wifi_data10[14] = {0};
+    uint32_t wifi_mgmt10[14] = {0};
     uint32_t wifi_total10 = 0;
     for (int n = 1; n <= 13; n++) {
-        wifi_rate[n] = (uint32_t)wifi_cnt[n] * 10u / wifi_win;
-        wifi_total10 += wifi_rate[n];
+        if (wifi_act[n].dwell_ms) {
+            wifi_data10[n] = (uint32_t)wifi_act[n].data * 10000u /
+                             wifi_act[n].dwell_ms;
+            wifi_mgmt10[n] = (uint32_t)wifi_act[n].mgmt * 10000u /
+                             wifi_act[n].dwell_ms;
+        }
+        wifi_total10 += wifi_data10[n] + wifi_mgmt10[n];
         if (wifi_total10 > 9990) wifi_total10 = 9990;
     }
     snprintf(buf, sizeof(buf), "WIFI %lu.%lu/s",
@@ -1251,17 +1258,25 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         snprintf(num, sizeof(num), "%d", n);
         text2x5(xc - (int)strlen(num) * 3 / 2, top + 1, num, 1, s_pro_num);
 
-        uint32_t r10 = wifi_rate[n];
-        if (r10) {
-            uint32_t full = s_pro_full ? s_pro_full : 5;
-            uint32_t v = (uint32_t)wifi_cnt[n] * 10000u / (wifi_win * full);
+        uint32_t d10 = wifi_data10[n];
+        uint32_t m10 = wifi_mgmt10[n];
+        uint32_t t10 = d10 + m10;
+        if (t10) {
+            uint32_t full = s_pro_full ? s_pro_full : 120;
+            uint32_t v = t10 * 1000u / full; /* 0.1 fps -> 0..10000 */
             if (v > 10000) v = 10000;
             int lvl = (int)isqrt100(v);
-            int wy = (bottom - 2) - (bottom - 2 - (top + 7)) * lvl / 100;
-            uint16_t col = wifi_rate_color(r10);
-            rect(bx + 1, wy, 4, 1, col);
-            for (int yy = wy + 2; yy < bottom - 1; yy += 2)
-                rect(bx + 2, yy, 1, 1, col);
+            int y0 = bottom - 2;
+            int hgt = (y0 - (top + 7)) * lvl / 100;
+            if (hgt > 0) {
+                int hd = (int)((uint32_t)hgt * d10 / t10);
+                for (int yy = y0 - hgt; yy < y0 - hd; yy++)
+                    rect(bx + 2, yy, 1, 1, s_pro_mgmt);
+                for (int yy = y0 - hd; yy < y0; yy++)
+                    rect(bx + 2, yy, 1, 1, s_pro_water);
+                rect(bx + 1, y0 - hgt, 4, 1, s_pro_mgmt);
+                if (hd > 0) rect(bx + 1, y0 - hd, 4, 1, s_pro_water);
+            }
         }
     }
 
@@ -1686,7 +1701,8 @@ void st7735_pro_defaults(void)
     s_pro_frame = RGB565(34, 34, 34);
     s_pro_num   = RGB565(92, 92, 92);
     s_pro_water = RGB565(60, 200, 255);
-    s_pro_full  = 5;
+    s_pro_mgmt  = RGB565(255, 160, 40);
+    s_pro_full  = 120;
 }
 
 void st7735_pro_load(void)
@@ -1697,6 +1713,7 @@ void st7735_pro_load(void)
     if (nvs_get_u16(h, "pro_frame", &v) == ESP_OK) s_pro_frame = v;
     if (nvs_get_u16(h, "pro_num", &v) == ESP_OK) s_pro_num = v;
     if (nvs_get_u16(h, "pro_water", &v) == ESP_OK) s_pro_water = v;
+    if (nvs_get_u16(h, "pro_mgmt", &v) == ESP_OK) s_pro_mgmt = v;
     if (nvs_get_u16(h, "pro_full", &v) == ESP_OK && v) s_pro_full = v;
     nvs_close(h);
 }
@@ -1708,6 +1725,7 @@ void st7735_pro_save(void)
     nvs_set_u16(h, "pro_frame", s_pro_frame);
     nvs_set_u16(h, "pro_num", s_pro_num);
     nvs_set_u16(h, "pro_water", s_pro_water);
+    nvs_set_u16(h, "pro_mgmt", s_pro_mgmt);
     nvs_set_u16(h, "pro_full", s_pro_full);
     nvs_commit(h);
     nvs_close(h);
@@ -1718,12 +1736,14 @@ void st7735_set_pro_color(st7735_pro_color_t which, uint16_t color)
     if (which == ST7735_PRO_FRAME) s_pro_frame = color;
     else if (which == ST7735_PRO_NUM) s_pro_num = color;
     else if (which == ST7735_PRO_WATER) s_pro_water = color;
+    else if (which == ST7735_PRO_MGMT) s_pro_mgmt = color;
 }
 
 uint16_t st7735_get_pro_color(st7735_pro_color_t which)
 {
     if (which == ST7735_PRO_FRAME) return s_pro_frame;
     if (which == ST7735_PRO_NUM) return s_pro_num;
+    if (which == ST7735_PRO_MGMT) return s_pro_mgmt;
     return s_pro_water;
 }
 

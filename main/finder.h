@@ -107,7 +107,13 @@ typedef struct {
 
 bool finder_init(void);
 void finder_poll(finder_view_t *v);
-void finder_channel_activity(uint16_t out[14], uint32_t *window_s);
+typedef struct {
+    uint16_t data;     /* data frames in the window */
+    uint16_t mgmt;     /* management frames in the window */
+    uint16_t dwell_ms; /* time the sniffer spent on this channel */
+} finder_ch_act_t;
+
+void finder_channel_activity(finder_ch_act_t out[14], uint32_t *window_s);
 bool finder_wifi_pause(void);
 bool finder_wifi_resume(void);
 

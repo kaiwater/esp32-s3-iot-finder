@@ -94,11 +94,14 @@ static int8_t s_rssi_hist[5];
 static volatile uint8_t s_rssi_n;
 static volatile uint8_t s_rssi_i;
 
-/* Per-channel 802.11 data-frame counts, 10 one-second bins. */
+/* Per-channel 802.11 counters and dwell, 10 one-second bins. */
 static uint16_t s_ch_data[14][10];
+static uint16_t s_ch_mgmt[14][10];
+static uint16_t s_ch_dwell[14][10];
 static uint8_t s_ch_bin;
 static uint32_t s_ch_bin_last_s;
 static uint32_t s_ch_start_s;
+static uint32_t s_dwell_last_ms;
 
 static int8_t s_peak = -128;
 static char s_ssid_hint[FINDER_SSID_MAX];
@@ -585,15 +588,35 @@ static void ch_bins_advance(uint32_t now_s)
     uint32_t delta = now_s - s_ch_bin_last_s;
     if (delta >= 10) {
         memset(s_ch_data, 0, sizeof(s_ch_data));
+        memset(s_ch_mgmt, 0, sizeof(s_ch_mgmt));
+        memset(s_ch_dwell, 0, sizeof(s_ch_dwell));
         s_ch_bin = 0;
         s_ch_bin_last_s = now_s;
         return;
     }
     while (s_ch_bin_last_s < now_s) {
         s_ch_bin = (uint8_t)((s_ch_bin + 1) % 10);
-        for (int i = 0; i < 14; i++) s_ch_data[i][s_ch_bin] = 0;
+        for (int i = 0; i < 14; i++) {
+            s_ch_data[i][s_ch_bin] = 0;
+            s_ch_mgmt[i][s_ch_bin] = 0;
+            s_ch_dwell[i][s_ch_bin] = 0;
+        }
         s_ch_bin_last_s++;
     }
+}
+
+static void ch_dwell_add(uint32_t now_msv)
+{
+    if (!s_dwell_last_ms) {
+        s_dwell_last_ms = now_msv;
+        return;
+    }
+    uint32_t dt = now_msv - s_dwell_last_ms;
+    s_dwell_last_ms = now_msv;
+    if (!s_wifi_ok || s_cur_ch < 1 || s_cur_ch > 13) return;
+    if (dt > 1000) dt = 1000;
+    uint32_t v = s_ch_dwell[s_cur_ch][s_ch_bin] + dt;
+    s_ch_dwell[s_cur_ch][s_ch_bin] = v > 65535 ? 65535 : (uint16_t)v;
 }
 
 static void drain_events(void)
@@ -604,11 +627,14 @@ static void drain_events(void)
     snif_evt_t ev;
     while (xQueueReceive(s_evt_q, &ev, 0) == pdTRUE) {
         s_packets++;
-        if (ev.type == 2 && ev.ch >= 1 && ev.ch <= 13) {
+        if ((ev.type == 2 || ev.type == 0) &&
+            ev.ch >= 1 && ev.ch <= 13) {
             portENTER_CRITICAL(&s_stats_mux);
             ch_bins_advance((uint32_t)(ev.ms / 1000));
-            if (s_ch_data[ev.ch][s_ch_bin] < 0xFFFF)
-                s_ch_data[ev.ch][s_ch_bin]++;
+            uint16_t *cnt = ev.type == 2 ?
+                            &s_ch_data[ev.ch][s_ch_bin] :
+                            &s_ch_mgmt[ev.ch][s_ch_bin];
+            if (*cnt < 0xFFFF) (*cnt)++;
             portEXIT_CRITICAL(&s_stats_mux);
         }
         bool learn = s_learn_until != 0 && ev.ms < s_learn_until;
@@ -1467,6 +1493,7 @@ bool finder_wifi_pause(void)
     esp_err_t err = esp_wifi_stop();
     if (err == ESP_OK) {
         s_wifi_ok = false;
+        s_dwell_last_ms = now_ms();
         ESP_LOGI(TAG, "Wi-Fi paused for RF scan");
     } else {
         ESP_LOGW(TAG, "wifi stop: %s", esp_err_to_name(err));
@@ -1493,6 +1520,7 @@ bool finder_wifi_resume(void)
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(s_cur_ch ? s_cur_ch : 1, WIFI_SECOND_CHAN_NONE);
     s_wifi_ok = true;
+    s_dwell_last_ms = now_ms();
     ESP_LOGI(TAG, "Wi-Fi resumed after RF scan");
     return true;
 }
@@ -1503,6 +1531,7 @@ void finder_poll(finder_view_t *v)
     uint32_t now = now_ms();
 
     portENTER_CRITICAL(&s_stats_mux);
+    ch_dwell_add(now);
     ch_bins_advance(now / 1000);
     portEXIT_CRITICAL(&s_stats_mux);
 
@@ -1730,23 +1759,31 @@ void finder_poll(finder_view_t *v)
     portEXIT_CRITICAL(&s_toast_mux);
 }
 
-void finder_channel_activity(uint16_t out[14], uint32_t *window_s)
+void finder_channel_activity(finder_ch_act_t out[14], uint32_t *window_s)
 {
     if (!out) return;
-    uint32_t now = now_ms() / 1000;
+    uint32_t now = now_ms();
 
     portENTER_CRITICAL(&s_stats_mux);
-    ch_bins_advance(now);
-    memset(out, 0, 14 * sizeof(uint16_t));
+    ch_dwell_add(now);
+    ch_bins_advance(now / 1000);
+    memset(out, 0, 14 * sizeof(*out));
     for (int ch = 1; ch <= 13; ch++) {
-        uint32_t sum = 0;
-        for (int i = 0; i < 10; i++) sum += s_ch_data[ch][i];
-        out[ch] = sum > 0xFFFF ? 0xFFFF : (uint16_t)sum;
+        uint32_t d = 0, m = 0, w = 0;
+        for (int i = 0; i < 10; i++) {
+            d += s_ch_data[ch][i];
+            m += s_ch_mgmt[ch][i];
+            w += s_ch_dwell[ch][i];
+        }
+        out[ch].data = d > 0xFFFF ? 0xFFFF : (uint16_t)d;
+        out[ch].mgmt = m > 0xFFFF ? 0xFFFF : (uint16_t)m;
+        out[ch].dwell_ms = w > 0xFFFF ? 0xFFFF : (uint16_t)w;
     }
     portEXIT_CRITICAL(&s_stats_mux);
 
     if (window_s) {
-        uint32_t win = s_ch_start_s ? now - s_ch_start_s : 0;
+        uint32_t sec = now / 1000;
+        uint32_t win = s_ch_start_s ? sec - s_ch_start_s : 0;
         if (win > 10) win = 10;
         *window_s = win ? win : 1;
     }

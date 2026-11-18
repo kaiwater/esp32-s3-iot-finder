@@ -382,8 +382,8 @@ static void print_help(void)
     ESP_LOGI("cli", "  mw off | mw reset     back to 13 channels / clear MW stats");
     ESP_LOGI("cli", "  pro                   RF Scan Pro: 126 x 1MHz sweep + PC list");
     ESP_LOGI("cli", "  pro off | reset | list  stop / clear / dump high-energy bands");
-    ESP_LOGI("cli", "  pro color frame|num|water RRGGBB   overlay colours (NVS)");
-    ESP_LOGI("cli", "  pro full N            water full scale in frames/s (NVS)");
+    ESP_LOGI("cli", "  pro color frame|num|water|mgmt RRGGBB   overlay colours (NVS)");
+    ESP_LOGI("cli", "  pro full N            water full at N true data+mgmt fps (NVS)");
     ESP_LOGI("cli", "  pro show | cfg reset  show / reset the Pro overlay config");
     ESP_LOGI("cli", "  btn 1..4 [long]       emulate a short/long K1..K4 press");
     ESP_LOGI("cli", "  page                  print the current UI page");
@@ -974,7 +974,8 @@ static void handle_line(char *line)
             rgb <= 0xFFFFFF) {
             int idx = !strcmp(which, "frame") ? ST7735_PRO_FRAME :
                       !strcmp(which, "num") ? ST7735_PRO_NUM :
-                      !strcmp(which, "water") ? ST7735_PRO_WATER : -1;
+                      !strcmp(which, "water") ? ST7735_PRO_WATER :
+                      !strcmp(which, "mgmt") ? ST7735_PRO_MGMT : -1;
             if (idx >= 0) {
                 st7735_set_pro_color((st7735_pro_color_t)idx,
                     st7735_rgb565((uint8_t)(rgb >> 16),
@@ -982,10 +983,11 @@ static void handle_line(char *line)
                 st7735_pro_save();
                 ESP_LOGI("cli", "pro color %s=%06X saved", which, rgb);
             } else {
-                ESP_LOGW("cli", "usage: pro color frame|num|water RRGGBB");
+                ESP_LOGW("cli",
+                         "usage: pro color frame|num|water|mgmt RRGGBB");
             }
         } else {
-            ESP_LOGW("cli", "usage: pro color frame|num|water RRGGBB");
+            ESP_LOGW("cli", "usage: pro color frame|num|water|mgmt RRGGBB");
         }
     } else if (!strncmp(line, "pro full ", 9)) {
         int fps = atoi(line + 9);
@@ -1006,6 +1008,8 @@ static void handle_line(char *line)
         o += snprintf(out + o, sizeof(out) - o, " num=%02X%02X%02X", r, g, b);
         st7735_rgb888(st7735_get_pro_color(ST7735_PRO_WATER), &r, &g, &b);
         o += snprintf(out + o, sizeof(out) - o, " water=%02X%02X%02X", r, g, b);
+        st7735_rgb888(st7735_get_pro_color(ST7735_PRO_MGMT), &r, &g, &b);
+        o += snprintf(out + o, sizeof(out) - o, " mgmt=%02X%02X%02X", r, g, b);
         ESP_LOGI("cli", "%s full=%u", out, st7735_get_pro_full());
     } else if (!strcmp(line, "pro cfg reset")) {
         st7735_pro_defaults();
@@ -1024,16 +1028,20 @@ static void handle_line(char *line)
         ESP_LOGI("cli", "wifi %s%s", on ? "on" : "off",
                  ok ? "" : " (failed)");
     } else if (!strcmp(line, "wifidata")) {
-        uint16_t cnt[14];
+        finder_ch_act_t act[14];
         uint32_t win = 10;
-        finder_channel_activity(cnt, &win);
-        if (!win) win = 1;
-        char out[160];
-        int o = snprintf(out, sizeof(out), "wifi fps win=%lus:", (unsigned long)win);
-        for (int n = 1; n <= 13 && o < (int)sizeof(out) - 10; n++) {
-            uint32_t r10 = (uint32_t)cnt[n] * 10u / win;
-            o += snprintf(out + o, sizeof(out) - o, " %lu.%lu",
-                          (unsigned long)(r10 / 10), (unsigned long)(r10 % 10));
+        finder_channel_activity(act, &win);
+        char out[200];
+        int o = snprintf(out, sizeof(out), "wifi d/m fps win=%lus:",
+                         (unsigned long)win);
+        for (int n = 1; n <= 13 && o < (int)sizeof(out) - 14; n++) {
+            uint32_t d10 = act[n].dwell_ms ?
+                (uint32_t)act[n].data * 10000u / act[n].dwell_ms : 0;
+            uint32_t m10 = act[n].dwell_ms ?
+                (uint32_t)act[n].mgmt * 10000u / act[n].dwell_ms : 0;
+            o += snprintf(out + o, sizeof(out) - o, " %lu.%lu/%lu.%lu",
+                          (unsigned long)(d10 / 10), (unsigned long)(d10 % 10),
+                          (unsigned long)(m10 / 10), (unsigned long)(m10 % 10));
         }
         ESP_LOGI("cli", "%s", out);
     } else if (!strcmp(line, "mwdata")) {

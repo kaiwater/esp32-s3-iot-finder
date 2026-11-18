@@ -17,6 +17,7 @@ typedef enum {
     ST7735_PRO_FRAME = 0,
     ST7735_PRO_NUM,
     ST7735_PRO_WATER,
+    ST7735_PRO_MGMT,
 } st7735_pro_color_t;
 
 void st7735_pro_defaults(void);
