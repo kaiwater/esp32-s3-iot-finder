@@ -382,6 +382,9 @@ static void print_help(void)
     ESP_LOGI("cli", "  mw off | mw reset     back to 13 channels / clear MW stats");
     ESP_LOGI("cli", "  pro                   RF Scan Pro: 126 x 1MHz sweep + PC list");
     ESP_LOGI("cli", "  pro off | reset | list  stop / clear / dump high-energy bands");
+    ESP_LOGI("cli", "  pro color frame|num|water RRGGBB   overlay colours (NVS)");
+    ESP_LOGI("cli", "  pro full N            water full scale in frames/s (NVS)");
+    ESP_LOGI("cli", "  pro show | cfg reset  show / reset the Pro overlay config");
     ESP_LOGI("cli", "  btn 1..4 [long]       emulate a short/long K1..K4 press");
     ESP_LOGI("cli", "  page                  print the current UI page");
     ESP_LOGI("cli", "  stream [ms]           periodic RF/status line (0=off, default 1000)");
@@ -964,6 +967,50 @@ static void handle_line(char *line)
         ESP_LOGI("pro", "stats reset");
     } else if (!strcmp(line, "pro list")) {
         pro_print_list();
+    } else if (!strncmp(line, "pro color ", 10)) {
+        char which[12] = {0};
+        unsigned rgb = 0;
+        if (sscanf(line + 10, "%11s %x", which, &rgb) == 2 &&
+            rgb <= 0xFFFFFF) {
+            int idx = !strcmp(which, "frame") ? ST7735_PRO_FRAME :
+                      !strcmp(which, "num") ? ST7735_PRO_NUM :
+                      !strcmp(which, "water") ? ST7735_PRO_WATER : -1;
+            if (idx >= 0) {
+                st7735_set_pro_color((st7735_pro_color_t)idx,
+                    st7735_rgb565((uint8_t)(rgb >> 16),
+                                  (uint8_t)(rgb >> 8), (uint8_t)rgb));
+                st7735_pro_save();
+                ESP_LOGI("cli", "pro color %s=%06X saved", which, rgb);
+            } else {
+                ESP_LOGW("cli", "usage: pro color frame|num|water RRGGBB");
+            }
+        } else {
+            ESP_LOGW("cli", "usage: pro color frame|num|water RRGGBB");
+        }
+    } else if (!strncmp(line, "pro full ", 9)) {
+        int fps = atoi(line + 9);
+        if (fps >= 1 && fps <= 1000) {
+            st7735_set_pro_full((uint16_t)fps);
+            st7735_pro_save();
+            ESP_LOGI("cli", "pro full %d fps saved", fps);
+        } else {
+            ESP_LOGW("cli", "usage: pro full 1..1000");
+        }
+    } else if (!strcmp(line, "pro show")) {
+        uint8_t r, g, b;
+        char out[140];
+        int o;
+        st7735_rgb888(st7735_get_pro_color(ST7735_PRO_FRAME), &r, &g, &b);
+        o = snprintf(out, sizeof(out), "pro frame=%02X%02X%02X", r, g, b);
+        st7735_rgb888(st7735_get_pro_color(ST7735_PRO_NUM), &r, &g, &b);
+        o += snprintf(out + o, sizeof(out) - o, " num=%02X%02X%02X", r, g, b);
+        st7735_rgb888(st7735_get_pro_color(ST7735_PRO_WATER), &r, &g, &b);
+        o += snprintf(out + o, sizeof(out) - o, " water=%02X%02X%02X", r, g, b);
+        ESP_LOGI("cli", "%s full=%u", out, st7735_get_pro_full());
+    } else if (!strcmp(line, "pro cfg reset")) {
+        st7735_pro_defaults();
+        st7735_pro_save();
+        ESP_LOGI("cli", "pro cfg defaults restored");
     } else if (!strcmp(line, "wifioff")) {
         finder_wifi_pause();
         ESP_LOGI("cli", "wifi off");
@@ -981,11 +1028,13 @@ static void handle_line(char *line)
         uint32_t win = 10;
         finder_channel_activity(cnt, &win);
         if (!win) win = 1;
-        char out[140];
+        char out[160];
         int o = snprintf(out, sizeof(out), "wifi fps win=%lus:", (unsigned long)win);
-        for (int n = 1; n <= 13 && o < (int)sizeof(out) - 8; n++)
-            o += snprintf(out + o, sizeof(out) - o, " %u",
-                          (unsigned)(cnt[n] / win));
+        for (int n = 1; n <= 13 && o < (int)sizeof(out) - 10; n++) {
+            uint32_t r10 = (uint32_t)cnt[n] * 10u / win;
+            o += snprintf(out + o, sizeof(out) - o, " %lu.%lu",
+                          (unsigned long)(r10 / 10), (unsigned long)(r10 % 10));
+        }
         ESP_LOGI("cli", "%s", out);
     } else if (!strcmp(line, "mwdata")) {
         nrf_mw_t mw;
@@ -1160,6 +1209,7 @@ void app_main(void)
     /* Saved interval and template live in NVS, so changing them does not
      * need a rebuild.  Default is 1 Hz. */
     config_load();
+    st7735_pro_load();
     stream_set(s_stream_ms ? s_stream_ms : 1000);
     st7735_draw_finder(&s_view, &s_clock, &s_ui);
 

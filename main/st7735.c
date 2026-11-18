@@ -5,6 +5,7 @@
  * is the default requested for the handheld build.
  */
 #include "st7735.h"
+#include "nvs.h"
 
 #include "nrf_aux.h"
 
@@ -62,6 +63,12 @@
 static uint16_t col_bg, col_text, col_accent, col_dim, col_dark;
 static uint16_t col_warn, col_orange, col_red;
 static uint16_t col_rf_bg, col_rf_avg, col_rf_peak, col_rf_hot;
+
+/* RF Scan Pro overlay: persisted so colour/scale tweaks need no rebuild. */
+static uint16_t s_pro_frame;
+static uint16_t s_pro_num;
+static uint16_t s_pro_water;
+static uint16_t s_pro_full;
 
 #define COL_BG     col_bg
 #define COL_TEXT   col_text
@@ -1087,13 +1094,24 @@ static uint16_t strength_color(uint8_t v)
     return COL_DIM;
 }
 
-/* Cool ramp for the 802.11 background: brighter = more data frames/s. */
-static uint16_t wifi_rate_color(uint32_t rate)
+/* Cool ramp for the 802.11 water: rate is in 0.1 frames/s. */
+static uint16_t wifi_rate_color(uint32_t rate10)
 {
-    if (rate >= 30) return RGB565(170, 235, 255);
-    if (rate >= 10) return RGB565(60, 170, 255);
-    if (rate >= 3)  return RGB565(20, 90, 220);
-    return RGB565(0, 40, 120);
+    if (rate10 >= 300) return s_pro_water;
+    if (rate10 >= 100) return scale565(s_pro_water, 3, 4);
+    if (rate10 >= 30)  return scale565(s_pro_water, 2, 4);
+    return scale565(s_pro_water, 1, 4);
+}
+
+/* Integer sqrt for 0..10000, used to give low activity more water height. */
+static uint32_t isqrt100(uint32_t v)
+{
+    uint32_t r = 0;
+    for (uint32_t b = 1u << 6; b; b >>= 1) {
+        uint32_t t = (r + b) * (r + b);
+        if (t <= v) r += b;
+    }
+    return r;
 }
 
 static void draw_rf_pro_page(const ui_state_t *ui)
@@ -1141,15 +1159,18 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     uint32_t wifi_win = 10;
     finder_channel_activity(wifi_cnt, &wifi_win);
     if (!wifi_win) wifi_win = 1;
-    uint32_t wifi_rate[14] = {0};
-    uint32_t wifi_total = 0;
+    uint32_t wifi_rate[14] = {0}; /* 0.1 frames/s */
+    uint32_t wifi_total10 = 0;
     for (int n = 1; n <= 13; n++) {
-        wifi_rate[n] = wifi_cnt[n] / wifi_win;
-        wifi_total += wifi_rate[n];
-        if (wifi_total > 999) wifi_total = 999;
+        wifi_rate[n] = (uint32_t)wifi_cnt[n] * 10u / wifi_win;
+        wifi_total10 += wifi_rate[n];
+        if (wifi_total10 > 9990) wifi_total10 = 9990;
     }
-    snprintf(buf, sizeof(buf), "WIFI %lu/s", (unsigned long)wifi_total);
-    text3x5(2, 18, buf, 1, wifi_total ? wifi_rate_color(wifi_total) : COL_DIM);
+    snprintf(buf, sizeof(buf), "WIFI %lu.%lu/s",
+             (unsigned long)(wifi_total10 / 10),
+             (unsigned long)(wifi_total10 % 10));
+    text3x5(2, 18, buf, 1,
+            wifi_total10 ? wifi_rate_color(wifi_total10) : COL_DIM);
 
     const int top = 24, bottom = 100, x0 = 2;
 
@@ -1221,21 +1242,23 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         int bx = xc - 3;
         if (bx < x0) bx = x0;
 
-        rect(bx, top, 6, 1, COL_DIM);           /* top */
-        rect(bx, bottom - 1, 6, 1, COL_DIM);    /* bottom */
-        rect(bx, top, 1, bottom - top, COL_DIM);/* left */
-        rect(bx + 5, top, 1, bottom - top, COL_DIM); /* right */
+        rect(bx, top, 6, 1, s_pro_frame);           /* top */
+        rect(bx, bottom - 1, 6, 1, s_pro_frame);    /* bottom */
+        rect(bx, top, 1, bottom - top, s_pro_frame);/* left */
+        rect(bx + 5, top, 1, bottom - top, s_pro_frame); /* right */
 
         char num[4];
         snprintf(num, sizeof(num), "%d", n);
-        text2x5(xc - (int)strlen(num) * 3 / 2, top + 1, num, 1, COL_TEXT);
+        text2x5(xc - (int)strlen(num) * 3 / 2, top + 1, num, 1, s_pro_num);
 
-        uint32_t rate = wifi_rate[n];
-        uint32_t lvl = rate * 6;
-        if (lvl > 100) lvl = 100;
-        if (lvl) {
-            int wy = (bottom - 2) - (bottom - 2 - (top + 7)) * (int)lvl / 100;
-            uint16_t col = wifi_rate_color(rate);
+        uint32_t r10 = wifi_rate[n];
+        if (r10) {
+            uint32_t full = s_pro_full ? s_pro_full : 5;
+            uint32_t v = (uint32_t)wifi_cnt[n] * 10000u / (wifi_win * full);
+            if (v > 10000) v = 10000;
+            int lvl = (int)isqrt100(v);
+            int wy = (bottom - 2) - (bottom - 2 - (top + 7)) * lvl / 100;
+            uint16_t col = wifi_rate_color(r10);
             rect(bx + 1, wy, 4, 1, col);
             for (int yy = wy + 2; yy < bottom - 1; yy += 2)
                 rect(bx + 2, yy, 1, 1, col);
@@ -1658,8 +1681,77 @@ static bool on_color_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_d
     return hp == pdTRUE;
 }
 
+void st7735_pro_defaults(void)
+{
+    s_pro_frame = RGB565(34, 34, 34);
+    s_pro_num   = RGB565(92, 92, 92);
+    s_pro_water = RGB565(60, 200, 255);
+    s_pro_full  = 5;
+}
+
+void st7735_pro_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("finder", NVS_READONLY, &h) != ESP_OK) return;
+    uint16_t v;
+    if (nvs_get_u16(h, "pro_frame", &v) == ESP_OK) s_pro_frame = v;
+    if (nvs_get_u16(h, "pro_num", &v) == ESP_OK) s_pro_num = v;
+    if (nvs_get_u16(h, "pro_water", &v) == ESP_OK) s_pro_water = v;
+    if (nvs_get_u16(h, "pro_full", &v) == ESP_OK && v) s_pro_full = v;
+    nvs_close(h);
+}
+
+void st7735_pro_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("finder", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u16(h, "pro_frame", s_pro_frame);
+    nvs_set_u16(h, "pro_num", s_pro_num);
+    nvs_set_u16(h, "pro_water", s_pro_water);
+    nvs_set_u16(h, "pro_full", s_pro_full);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void st7735_set_pro_color(st7735_pro_color_t which, uint16_t color)
+{
+    if (which == ST7735_PRO_FRAME) s_pro_frame = color;
+    else if (which == ST7735_PRO_NUM) s_pro_num = color;
+    else if (which == ST7735_PRO_WATER) s_pro_water = color;
+}
+
+uint16_t st7735_get_pro_color(st7735_pro_color_t which)
+{
+    if (which == ST7735_PRO_FRAME) return s_pro_frame;
+    if (which == ST7735_PRO_NUM) return s_pro_num;
+    return s_pro_water;
+}
+
+void st7735_set_pro_full(uint16_t fps)
+{
+    if (fps) s_pro_full = fps;
+}
+
+uint16_t st7735_get_pro_full(void)
+{
+    return s_pro_full;
+}
+
+uint16_t st7735_rgb565(uint8_t r, uint8_t g, uint8_t b)
+{
+    return RGB565(r, g, b);
+}
+
+void st7735_rgb888(uint16_t color, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    if (r) *r = (uint8_t)(((color >> 11) & 0x1F) << 3);
+    if (g) *g = (uint8_t)((color & 0x1F) << 3);
+    if (b) *b = (uint8_t)(((color >> 5) & 0x3F) << 2);
+}
+
 void st7735_init(void)
 {
+    st7735_pro_defaults();
     apply_theme(0);
     const spi_bus_config_t buscfg = {
         .sclk_io_num = PIN_SCK,

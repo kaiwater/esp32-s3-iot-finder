@@ -11,6 +11,23 @@ void st7735_init(void);
 int st7735_next_theme(void);
 int st7735_theme(void);
 int st7735_rf_shown_channel(void);
+
+/* RF Scan Pro overlay colours and water scale (persisted in NVS). */
+typedef enum {
+    ST7735_PRO_FRAME = 0,
+    ST7735_PRO_NUM,
+    ST7735_PRO_WATER,
+} st7735_pro_color_t;
+
+void st7735_pro_defaults(void);
+void st7735_pro_load(void);
+void st7735_pro_save(void);
+void st7735_set_pro_color(st7735_pro_color_t which, uint16_t color);
+uint16_t st7735_get_pro_color(st7735_pro_color_t which);
+void st7735_set_pro_full(uint16_t fps);
+uint16_t st7735_get_pro_full(void);
+uint16_t st7735_rgb565(uint8_t r, uint8_t g, uint8_t b);
+void st7735_rgb888(uint16_t color, uint8_t *r, uint8_t *g, uint8_t *b);
 const char *st7735_theme_name(void);
 typedef enum {
     UI_PAGE_FIND = 0,
