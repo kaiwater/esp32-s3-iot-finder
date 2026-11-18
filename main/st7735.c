@@ -1266,16 +1266,18 @@ static void draw_rf_pro_page(const ui_state_t *ui)
             uint32_t v = t10 * 1000u / full; /* 0.1 fps -> 0..10000 */
             if (v > 10000) v = 10000;
             int lvl = (int)isqrt100(v);
-            int y0 = bottom - 2;
-            int hgt = (y0 - (top + 7)) * lvl / 100;
+            /* Wi-Fi water hangs DOWN from the top (zero at the top), so it
+             * does not fight the NRF bars that grow up from the bottom. */
+            int y0 = top + 7;            /* below the channel number */
+            int hgt = (bottom - 2 - y0) * lvl / 100;
             if (hgt > 0) {
                 int hd = (int)((uint32_t)hgt * d10 / t10);
-                for (int yy = y0 - hgt; yy < y0 - hd; yy++)
-                    rect(bx + 2, yy, 1, 1, s_pro_mgmt);
-                for (int yy = y0 - hd; yy < y0; yy++)
+                for (int yy = y0; yy < y0 + hd; yy++)
                     rect(bx + 2, yy, 1, 1, s_pro_water);
-                rect(bx + 1, y0 - hgt, 4, 1, s_pro_mgmt);
-                if (hd > 0) rect(bx + 1, y0 - hd, 4, 1, s_pro_water);
+                for (int yy = y0 + hd; yy < y0 + hgt; yy++)
+                    rect(bx + 2, yy, 1, 1, s_pro_mgmt);
+                if (hd > 0) rect(bx + 1, y0 + hd, 4, 1, s_pro_water);
+                rect(bx + 1, y0 + hgt, 4, 1, s_pro_mgmt);
             }
         }
     }
