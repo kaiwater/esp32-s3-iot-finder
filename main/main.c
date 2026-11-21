@@ -378,7 +378,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  wifi / wifitoggle     flip Wi-Fi for an A/B desense check");
     ESP_LOGI("cli", "  mwdata                print the 2450 MHz mode stats");
     ESP_LOGI("cli", "  wifidata              per-channel 802.11 data frames/s");
-    ESP_LOGI("cli", "  lcd init|red|green|blue|white|off|status   display test");
+    ESP_LOGI("cli", "  lcd init|recover|auto N|red|green|blue|white|off|status");
     ESP_LOGI("cli", "  mw                    fixed 2450 MHz observation (NRF CH50)");
     ESP_LOGI("cli", "  mw off | mw reset     back to 13 channels / clear MW stats");
     ESP_LOGI("cli", "  pro                   RF Scan Pro: 126 x 1MHz sweep + PC list");
@@ -1027,6 +1027,16 @@ static void handle_line(char *line)
         const char *arg = line + 4;
         if (!strcmp(arg, "status")) {
             st7735_lcd_status();
+        } else if (!strncmp(arg, "auto ", 5)) {
+            int sec = atoi(arg + 5);
+            st7735_set_auto_reinit(sec > 0 ? (uint16_t)sec : 0);
+            ESP_LOGI("cli", "lcd auto re-init %d s", sec);
+        } else if (!strcmp(arg, "recover")) {
+            st7735_lcd_test(0);
+            vTaskDelay(pdMS_TO_TICKS(250));
+            st7735_lcd_recover();
+            st7735_lcd_test_off();
+            ESP_LOGI("cli", "lcd recover");
         } else if (!strcmp(arg, "off")) {
             st7735_lcd_test_off();
             ESP_LOGI("cli", "lcd test off");
@@ -1219,9 +1229,8 @@ void app_main(void)
 
     /* Some ST7735 panels miss the first init on a cold boot.  Repeat it
      * after the rails settle, before the first page is drawn. */
-    vTaskDelay(pdMS_TO_TICKS(250));
-    st7735_lcd_reinit();
-    ESP_LOGI(TAG, "display init/re-init complete");
+    st7735_lcd_boot_init(5);
+    ESP_LOGI(TAG, "display init loop complete");
 
     memset(&s_view, 0, sizeof(s_view));
     s_view.link = FINDER_LINK_NONE;

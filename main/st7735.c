@@ -183,15 +183,22 @@ static SemaphoreHandle_t s_flush_done;
 static uint16_t *s_fb;
 static uint32_t s_flush_ok;
 static uint32_t s_flush_timeouts;
+static uint32_t s_last_flush_ok_ms;
+static uint32_t s_last_recover_ms;
+static uint32_t s_recoveries;
+static uint16_t s_auto_reinit_s;
+static uint32_t s_last_auto_ms;
 
 static void flush_fb(void)
 {
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
     if (!s_flush_done) return;
-    if (xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200)) == pdTRUE)
+    if (xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200)) == pdTRUE) {
         s_flush_ok++;
-    else
+        s_last_flush_ok_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    } else {
         s_flush_timeouts++;
+    }
 }
 
 static const uint8_t s_font8[64][8] = {
@@ -1723,17 +1730,76 @@ void st7735_lcd_test_off(void)
     s_lcd_test = false;
 }
 
+void st7735_lcd_recover(void)
+{
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    s_recoveries++;
+    s_last_recover_ms = now;
+    st7735_lcd_reinit();
+    s_last_flush_ok_ms = now;
+    ESP_LOGW(TAG, "LCD re-init after flush stall (#%lu)",
+             (unsigned long)s_recoveries);
+}
+
+void st7735_lcd_boot_init(int attempts)
+{
+    /* Harsh EMI/EMP environment: apply the init sequence several times
+     * with settling delays before trusting the first frame.  There is no
+     * panel readback, so "success" means the host flush completed. */
+    for (int i = 1; i <= attempts; i++) {
+        vTaskDelay(pdMS_TO_TICKS(i == 1 ? 250 : 400));
+        st7735_lcd_reinit();
+        clear_panel();
+        flush_fb();
+        if (s_flush_ok) {
+            ESP_LOGW(TAG, "LCD init loop ok on attempt %d", i);
+            s_last_auto_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            return;
+        }
+    }
+    ESP_LOGE(TAG, "LCD init loop: no flush after %d attempts", attempts);
+}
+
+void st7735_set_auto_reinit(uint16_t sec)
+{
+    s_auto_reinit_s = sec;
+    s_last_auto_ms = (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+uint16_t st7735_get_auto_reinit(void)
+{
+    return s_auto_reinit_s;
+}
+
 void st7735_lcd_status(void)
 {
     ESP_LOGI("cli", "lcd host_init=ok test=%d flush_ok=%lu timeout=%lu bl=%d",
              s_lcd_test, (unsigned long)s_flush_ok,
              (unsigned long)s_flush_timeouts, gpio_get_level(PIN_BL));
+    ESP_LOGI("cli", "lcd recoveries=%lu auto=%us",
+             (unsigned long)s_recoveries, s_auto_reinit_s);
 }
 
 void st7735_draw_finder(const finder_view_t *v, const wnm_clock_view_t *c,
                         const ui_state_t *ui)
 {
     if (s_lcd_test) return;
+
+    /* If the panel stopped completing flushes (EMI, SPI lock-up), the
+     * last good frame is stale.  Re-apply the init sequence at most every
+     * 5 s; the next draw will repaint the page. */
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if (s_last_flush_ok_ms &&
+        now_ms - s_last_flush_ok_ms > 3000 &&
+        now_ms - s_last_recover_ms > 5000) {
+        st7735_lcd_recover();
+    }
+    if (s_auto_reinit_s &&
+        now_ms - s_last_auto_ms > (uint32_t)s_auto_reinit_s * 1000u) {
+        s_last_auto_ms = now_ms;
+        st7735_lcd_reinit();
+        ESP_LOGW(TAG, "periodic LCD re-init");
+    }
     if (!s_panel || !s_fb || !v || !ui) return;
     switch (ui->page) {
     case UI_PAGE_MENU: draw_menu_page(v, ui); break;
