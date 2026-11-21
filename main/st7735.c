@@ -1106,6 +1106,10 @@ static uint16_t strength_color(uint8_t v)
     return COL_DIM;
 }
 
+/* Grey ticks for the 20 / 40 MHz channel edges. */
+#define COL_WIFI_EDGE   RGB565(60, 60, 60)
+#define COL_WIFI_EDGE40 RGB565(32, 32, 32)
+
 /* Cool ramp for the 802.11 water: rate is in 0.1 frames/s. */
 static uint16_t wifi_rate_color(uint32_t rate10)
 {
@@ -1321,7 +1325,26 @@ static void draw_rf_pro_page(const ui_state_t *ui)
         }
     }
 
-    /* 20 MHz ticks inside the visible window. */
+    /* Channel width ticks: each 20 MHz channel spans +/-10 MHz around its
+     * centre; a 40 MHz HT channel can reach +/-20 MHz (its real centre is
+     * offset by 10 MHz, so these are extent markers, not the HT centre). */
+    for (int n = 1; n <= 13; n++) {
+        int c = 2412 + (n - 1) * 5;
+        for (int e = -10; e <= 10; e += 20) {
+            int mhz = c + e;
+            if (mhz < 2400 || mhz > 2525) continue;
+            int x = x0 + (mhz - 2400) * PRO_PIXELS / NRF_PRO_CHANNELS;
+            rect(x, 101, 1, 2, COL_WIFI_EDGE);
+        }
+        for (int e = -20; e <= 20; e += 40) {
+            int mhz = c + e;
+            if (mhz < 2400 || mhz > 2525) continue;
+            int x = x0 + (mhz - 2400) * PRO_PIXELS / NRF_PRO_CHANNELS;
+            rect(x, 103, 1, 1, COL_WIFI_EDGE40);
+        }
+    }
+
+    /* 20 MHz frequency ticks inside the visible window. */
     for (int mhz = 2400; mhz <= 2500; mhz += 20) {
         int x = x0 + (mhz - 2400) * PRO_PIXELS / NRF_PRO_CHANNELS;
         if (x > WIDTH - 17) x = WIDTH - 17;
