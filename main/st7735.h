@@ -12,6 +12,11 @@ int st7735_next_theme(void);
 int st7735_theme(void);
 int st7735_rf_shown_channel(void);
 
+/* Bring-up helpers: re-init the panel and hold a solid colour on screen. */
+void st7735_lcd_reinit(void);
+void st7735_lcd_test(int which);
+void st7735_lcd_test_off(void);
+
 /* RF Scan Pro overlay colours and water scale (persisted in NVS). */
 typedef enum {
     ST7735_PRO_FRAME = 0,

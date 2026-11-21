@@ -1695,9 +1695,41 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
     if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
 }
 
+static bool s_lcd_test;
+
+void st7735_lcd_reinit(void)
+{
+    esp_lcd_panel_reset(s_panel);
+    esp_lcd_panel_init(s_panel);
+    esp_lcd_panel_set_gap(s_panel, 0, 0);
+    esp_lcd_panel_swap_xy(s_panel, true);
+    esp_lcd_panel_mirror(s_panel, true, false);
+    esp_lcd_panel_invert_color(s_panel, false);
+    esp_lcd_panel_disp_on_off(s_panel, true);
+}
+
+void st7735_lcd_test(int which)
+{
+    s_lcd_test = true;
+    clear_panel();
+    uint16_t col = which == 1 ? RGB565(0, 255, 0) :
+                   which == 2 ? RGB565(0, 0, 255) :
+                   which == 3 ? RGB565(255, 255, 255) :
+                                RGB565(255, 0, 0);
+    rect(0, 0, WIDTH, HEIGHT, col);
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(500));
+}
+
+void st7735_lcd_test_off(void)
+{
+    s_lcd_test = false;
+}
+
 void st7735_draw_finder(const finder_view_t *v, const wnm_clock_view_t *c,
                         const ui_state_t *ui)
 {
+    if (s_lcd_test) return;
     if (!s_panel || !s_fb || !v || !ui) return;
     switch (ui->page) {
     case UI_PAGE_MENU: draw_menu_page(v, ui); break;

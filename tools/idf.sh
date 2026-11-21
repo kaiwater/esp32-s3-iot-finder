@@ -13,16 +13,5 @@ else
     export_script="$HOME/esp/esp-idf/export.sh"
 fi
 
-# ESP-IDF's virtualenv is tied to a Python version (3.10 here).  On systems
-# where "python3" is older, give the export script a python3 -> python3.10
-# shim instead of asking the user to fix PATH.
-if command -v python3.10 >/dev/null 2>&1; then
-    shim="${TMPDIR:-/tmp}/finder-idf-py310"
-    mkdir -p "$shim"
-    ln -sf "$(command -v python3.10)" "$shim/python3"
-    PATH="$shim:$PATH"
-    export PATH
-fi
-
 . "$export_script" >/dev/null 2>&1
 exec idf.py "$@"
