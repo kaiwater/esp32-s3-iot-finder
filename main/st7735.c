@@ -181,6 +181,18 @@ static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_io;
 static SemaphoreHandle_t s_flush_done;
 static uint16_t *s_fb;
+static uint32_t s_flush_ok;
+static uint32_t s_flush_timeouts;
+
+static void flush_fb(void)
+{
+    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
+    if (!s_flush_done) return;
+    if (xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200)) == pdTRUE)
+        s_flush_ok++;
+    else
+        s_flush_timeouts++;
+}
 
 static const uint8_t s_font8[64][8] = {
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, /*   */
@@ -593,8 +605,7 @@ static void draw_ssid_page(const finder_view_t *v, const ui_state_t *ui)
         text3x5(2, 119, "* BACK", 1, COL_ACCENT);
     }
 
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 /* Single-line variant of draw_ssid_text, used by the AP/STA tree. */
@@ -709,8 +720,7 @@ static void draw_ap_list_page(const ui_state_t *ui)
     }
 
     text3x5(2, 119, "> < MOVE  # INFO  * BACK", 1, COL_DIM);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static void draw_ap_detail_page(const ui_state_t *ui)
@@ -729,8 +739,7 @@ static void draw_ap_detail_page(const ui_state_t *ui)
     if (!a) {
         text3x5(4, 40, "NO AP SELECTED", 1, COL_DIM);
         text3x5(2, 119, "* BACK", 1, COL_ACCENT);
-        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-        if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+        flush_fb();
         return;
     }
 
@@ -780,8 +789,7 @@ static void draw_ap_detail_page(const ui_state_t *ui)
     }
 
     text3x5(2, 119, "# STA LIST   * BACK", 1, COL_ACCENT);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static void draw_sta_list_page(const ui_state_t *ui)
@@ -843,8 +851,7 @@ static void draw_sta_list_page(const ui_state_t *ui)
     }
 
     text3x5(2, 119, "# TARGET   * BACK", 1, COL_ACCENT);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static void menu_label(int item, const finder_view_t *v, char *out, size_t n)
@@ -895,8 +902,7 @@ static void draw_menu_page(const finder_view_t *v, const ui_state_t *ui)
 
     text3x5(2, 119, "> < MOVE  # SELECT  * BACK", 1, COL_DIM);
 
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static int s_rf_shown = -1;
@@ -934,8 +940,7 @@ static void draw_rf_scan_page(const ui_state_t *ui)
         text3x5(4, 38, "NRF NOT FOUND", 1, COL_WARN);
         text3x5(4, 46, "CHECK 3V3 / SPI / CSN", 1, COL_DIM);
         text3x5(2, 119, "* BACK", 1, COL_ACCENT);
-        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-        if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+        flush_fb();
         return;
     }
 
@@ -1056,8 +1061,7 @@ static void draw_rf_scan_page(const ui_state_t *ui)
             text3x5(158 - hl * 4 * hs + hs - 16, 20, "HIT", 1, COL_DIM);
     }
     text3x5(2, 119, "# HELP  HOLD# RESET  * BACK", 1, COL_ACCENT);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 #define PRO_PIXELS 156 /* the whole chart width for all 126 x 1 MHz bins */
@@ -1337,8 +1341,7 @@ static void draw_rf_pro_page(const ui_state_t *ui)
     }
 
     text3x5(2, 121, "# VIEW  HOLD# RESET  * BACK", 1, COL_ACCENT);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static void draw_mw_page(void)
@@ -1391,8 +1394,7 @@ static void draw_mw_page(void)
     text3x5(2, 86, "FIXED CH50  2400+50", 1, COL_DIM);
 
     text3x5(2, 119, "# HELP  HOLD# RESET  * BACK", 1, COL_ACCENT);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static void draw_rf_help_page(void)
@@ -1411,8 +1413,7 @@ static void draw_rf_help_page(void)
     text3x5(2, 108, "SPEED=LAST 10S", 1, COL_DIM);
 
     text3x5(2, 119, "* BACK", 1, COL_ACCENT);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static void draw_color_test_page(void)
@@ -1438,8 +1439,7 @@ static void draw_color_test_page(void)
         text3x5(x + 6, 106, names[i], 1, COL_TEXT);
     }
     text3x5(2, 119, "* BACK", 1, COL_ACCENT);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static void draw_finder_page(const finder_view_t *v, const wnm_clock_view_t *c)
@@ -1577,8 +1577,7 @@ static void draw_finder_page(const finder_view_t *v, const wnm_clock_view_t *c)
         text3x5(2, 121, "HOLD >/< CH   HOLD * THEME", 1, COL_DIM);
     }
 
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
@@ -1691,8 +1690,7 @@ static void draw_info_page(const finder_view_t *v, const wnm_clock_view_t *c)
     text3x5(2, 119, buf, 1, (c && c->synced) ? COL_ACCENT : COL_DIM);
     text3x5(60, 119, "* BACK", 1, COL_ACCENT);
 
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(200));
+    flush_fb();
 }
 
 static bool s_lcd_test;
@@ -1717,13 +1715,19 @@ void st7735_lcd_test(int which)
                    which == 3 ? RGB565(255, 255, 255) :
                                 RGB565(255, 0, 0);
     rect(0, 0, WIDTH, HEIGHT, col);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, 0, WIDTH, HEIGHT, s_fb));
-    if (s_flush_done) xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(500));
+    flush_fb();
 }
 
 void st7735_lcd_test_off(void)
 {
     s_lcd_test = false;
+}
+
+void st7735_lcd_status(void)
+{
+    ESP_LOGI("cli", "lcd host_init=ok test=%d flush_ok=%lu timeout=%lu bl=%d",
+             s_lcd_test, (unsigned long)s_flush_ok,
+             (unsigned long)s_flush_timeouts, gpio_get_level(PIN_BL));
 }
 
 void st7735_draw_finder(const finder_view_t *v, const wnm_clock_view_t *c,
@@ -1877,7 +1881,7 @@ void st7735_init(void)
 
     const gpio_config_t bl = {
         .pin_bit_mask = 1ULL << PIN_BL,
-        .mode = GPIO_MODE_OUTPUT,
+        .mode = GPIO_MODE_INPUT_OUTPUT,
     };
     ESP_ERROR_CHECK(gpio_config(&bl));
     ESP_ERROR_CHECK(gpio_set_level(PIN_BL, 1));

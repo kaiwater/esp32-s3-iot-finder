@@ -16,6 +16,7 @@ int st7735_rf_shown_channel(void);
 void st7735_lcd_reinit(void);
 void st7735_lcd_test(int which);
 void st7735_lcd_test_off(void);
+void st7735_lcd_status(void);
 
 /* RF Scan Pro overlay colours and water scale (persisted in NVS). */
 typedef enum {

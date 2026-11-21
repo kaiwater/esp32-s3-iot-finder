@@ -378,7 +378,7 @@ static void print_help(void)
     ESP_LOGI("cli", "  wifi / wifitoggle     flip Wi-Fi for an A/B desense check");
     ESP_LOGI("cli", "  mwdata                print the 2450 MHz mode stats");
     ESP_LOGI("cli", "  wifidata              per-channel 802.11 data frames/s");
-    ESP_LOGI("cli", "  lcd init|red|green|blue|white|off   display bring-up test");
+    ESP_LOGI("cli", "  lcd init|red|green|blue|white|off|status   display test");
     ESP_LOGI("cli", "  mw                    fixed 2450 MHz observation (NRF CH50)");
     ESP_LOGI("cli", "  mw off | mw reset     back to 13 channels / clear MW stats");
     ESP_LOGI("cli", "  pro                   RF Scan Pro: 126 x 1MHz sweep + PC list");
@@ -1025,7 +1025,9 @@ static void handle_line(char *line)
         ESP_LOGI("cli", "lcd reinit + red");
     } else if (!strncmp(line, "lcd ", 4)) {
         const char *arg = line + 4;
-        if (!strcmp(arg, "off")) {
+        if (!strcmp(arg, "status")) {
+            st7735_lcd_status();
+        } else if (!strcmp(arg, "off")) {
             st7735_lcd_test_off();
             ESP_LOGI("cli", "lcd test off");
         } else {
@@ -1219,6 +1221,7 @@ void app_main(void)
      * after the rails settle, before the first page is drawn. */
     vTaskDelay(pdMS_TO_TICKS(250));
     st7735_lcd_reinit();
+    ESP_LOGI(TAG, "display init/re-init complete");
 
     memset(&s_view, 0, sizeof(s_view));
     s_view.link = FINDER_LINK_NONE;
